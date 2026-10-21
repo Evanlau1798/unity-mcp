@@ -64,6 +64,14 @@ Exit-code contract: `0` all blocking legs passed, `1` a blocking-leg regression,
 
 It needs a Hub-activated Editor locally (no ULF/serial); none of the CI license staging applies.
 
+### Refresh and test-job lifecycle regressions
+
+Use the isolated test project for lifecycle changes. The focused native fixtures are `RefreshOperationTrackerTests`, `RefreshUnityTests`, `TestJobManagerLifecycleTests` and `TestRunnerServiceNativeQueryRetryTests`; the Python contract tests cover operation receipts, preflight, dirty generations and the total test-job observation deadline. Establish a behavioral failing assertion before applying the corresponding repair; a compile or dependency error does not demonstrate the regression.
+
+After those tests pass, use the resident bridge from the canonical harness to check an assets-only refresh, an implicit C# compilation, an explicit compilation and same-ID recovery across domain reload. Verify loaded assets or assembly markers as well as the receipt. Then run one targeted EditMode and one PlayMode job and observe both the result and native cleanup release. Do not infer completion merely from idle state, elapsed time, a Task finishing or a terminal job status.
+
+The Unity Test Framework API differs by installed version. On 1.1.33, per-run activity is obtained from the native run holder because newer per-GUID API methods are unavailable. An unavailable or failed native query means unknown ownership, not inactivity. Initialization timeout must not turn a late successful callback into a successful job or unlock a run whose scene restoration is still pending.
+
 ### Adding a Unity test
 
 Mirror the C# tool you're adding. For `ManageNavigation.cs` in `MCPForUnity/Editor/Tools/`, create `TestProjects/UnityMCPTests/Assets/Tests/EditMode/Editor/ManageNavigationTests.cs`. Use the existing assembly definition (`MCPForUnityTests.Editor.asmdef`) so the suite picks it up automatically.

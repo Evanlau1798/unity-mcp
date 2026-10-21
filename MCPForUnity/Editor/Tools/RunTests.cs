@@ -22,10 +22,13 @@ namespace MCPForUnity.Editor.Tools
                 // Check for clear_stuck action first
                 if (ParamCoercion.CoerceBool(@params?["clear_stuck"], false))
                 {
+                    string originalJobId = TestJobManager.CurrentJobId;
                     bool wasCleared = TestJobManager.ClearStuckJob();
+                    if (TestJobManager.HasRunningJob)
+                        return Task.FromResult<object>(TestsBusyResponse(wasCleared));
                     return Task.FromResult<object>(new SuccessResponse(
                         wasCleared ? "Stuck job cleared." : "No running job to clear.",
-                        new { cleared = wasCleared }
+                        new { cleared = wasCleared, job_id = originalJobId, native_ownership_retained = false }
                     ));
                 }
 
@@ -39,6 +42,13 @@ namespace MCPForUnity.Editor.Tools
                 {
                     return Task.FromResult<object>(new ErrorResponse(parseError));
                 }
+
+                // Both owners are checked without native dispatch. StartJob repeats
+                // the guards at acquisition, so its callers share the same contract.
+                if (TestJobManager.HasRunningJob)
+                    return Task.FromResult<object>(TestsBusyResponse());
+                if (RefreshOperationTracker.IsInProgress)
+                    return Task.FromResult<object>(RefreshBusyResponse());
 
                 var p = new ToolParams(@params);
                 bool includeDetails = p.GetBool("includeDetails");
@@ -57,9 +67,22 @@ namespace MCPForUnity.Editor.Tools
                     include_failed_tests = includeFailedTests
                 }));
             }
+            catch (UnsavedTestSceneException ex)
+            {
+                return Task.FromResult<object>(new ErrorResponse("unsaved_scene", new
+                {
+                    reason = "unsaved_scene", scene_name = ex.SceneName,
+                    message = ex.Message, request_accepted = false
+                }));
+            }
             catch (Exception ex)
             {
-                // Normalize the already-running case to a stable error token.
+                // Classify by the actual owner, not overlapping exception wording.
+                if (TestJobManager.HasRunningJob)
+                    return Task.FromResult<object>(TestsBusyResponse());
+                if (RefreshOperationTracker.IsInProgress)
+                    return Task.FromResult<object>(RefreshBusyResponse());
+                // Preserve compatibility with any non-owned runner rejection.
                 if (ex.Message != null && ex.Message.IndexOf("already in progress", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     return Task.FromResult<object>(new ErrorResponse("tests_running", new { reason = "tests_running", retry_after_ms = 5000 }));
@@ -67,6 +90,22 @@ namespace MCPForUnity.Editor.Tools
                 return Task.FromResult<object>(new ErrorResponse($"Failed to start test job: {ex.Message}"));
             }
         }
+
+        private static ErrorResponse TestsBusyResponse(bool? cleared = null) => new ErrorResponse(
+            "tests_running", new
+            {
+                reason = "tests_running", job_id = TestJobManager.CurrentJobId,
+                native_ownership_retained = TestJobManager.HasRunningJob,
+                cleared, retry_after_ms = 5000
+            });
+
+        private static ErrorResponse RefreshBusyResponse() => new ErrorResponse(
+            "refresh_in_progress", new
+            {
+                reason = "refresh_in_progress",
+                active_operation_id = RefreshOperationTracker.ActiveOperationId,
+                retry_after_ms = 250
+            });
 
         private static TestFilterOptions GetFilterOptions(JObject @params)
         {

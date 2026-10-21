@@ -49,27 +49,63 @@ async def preflight(
         state = state_resp.model_dump() if hasattr(
             state_resp, "model_dump") else state_resp
     except Exception:
-        # If we cannot determine readiness, fall back to proceeding (tools already contain retry logic).
-        return None
+        return _busy("editor_state_unconfirmed", 500)
 
-    if not isinstance(state, dict) or not state.get("success", False):
-        # Unknown state; proceed rather than blocking (avoids false positives when Unity is reachable but status isn't).
-        return None
+    if not isinstance(state, dict) or state.get("success") is not True:
+        return _busy("editor_state_unconfirmed", 500)
 
     data = state.get("data")
-    if not isinstance(data, dict):
-        return None
+    if not isinstance(data, dict) or (data.get("staleness") or {}).get("is_stale") is True:
+        return _busy("editor_state_unconfirmed", 500)
 
-    # Optional refresh-if-dirty
+    # Check the native owner before a refresh, which is itself a mutation.
+    if requires_no_tests and (data.get("tests") or {}).get("is_running") is True:
+        return _busy("tests_running", 5000)
+
+    # A refresh acceptance is not completion. Preserve failures and operation
+    # identity, then obtain a new snapshot instead of reusing pre-refresh state.
+    refreshed = False
+    assets = data.get("assets") or {}
+    if (assets.get("refresh") or {}).get("is_refresh_in_progress") is True and not refresh_if_dirty:
+        return _busy("refresh_pending", 500)
     if refresh_if_dirty:
-        assets = data.get("assets")
-        if isinstance(assets, dict) and assets.get("external_changes_dirty") is True:
+        if assets.get("external_changes_dirty") is True or (assets.get("refresh") or {}).get("is_refresh_in_progress") is True:
             try:
                 from services.tools.refresh_unity import refresh_unity
-                await refresh_unity(ctx, mode="if_dirty", scope="all", compile="request", wait_for_ready=True)
+                response = await refresh_unity(
+                    ctx, mode="if_dirty", scope="all", compile="request", wait_for_ready=True,
+                )
+                payload = response.model_dump() if hasattr(response, "model_dump") else response
             except Exception:
-                # Best-effort only; fall through to normal tool dispatch.
-                pass
+                return _busy("refresh_unconfirmed", 500)
+            if not isinstance(payload, dict) or "success" not in payload:
+                return _busy("refresh_unconfirmed", 500)
+            if payload["success"] is not True:
+                return MCPResponse(**payload)
+            receipt = payload.get("data")
+            if not isinstance(receipt, dict) or receipt.get("completed") is not True:
+                blocked = _busy("refresh_pending", 500)
+                blocked.data["refresh"] = payload
+                return blocked
+
+            try:
+                state_resp = await get_editor_state(ctx)
+                state = state_resp.model_dump() if hasattr(state_resp, "model_dump") else state_resp
+                if not isinstance(state, dict) or state.get("success") is not True:
+                    return _busy("editor_state_unconfirmed", 500)
+                data = state.get("data")
+                if not isinstance(data, dict) or (data.get("staleness") or {}).get("is_stale") is True:
+                    return _busy("editor_state_unconfirmed", 500)
+            except Exception:
+                return _busy("editor_state_unconfirmed", 500)
+            refreshed = True
+            if ((data.get("assets") or {}).get("refresh") or {}).get("is_refresh_in_progress") is True:
+                return _busy("refresh_pending", 500)
+            if (data.get("assets") or {}).get("external_changes_dirty") is True:
+                return _busy("external_changes_pending", 500)
+
+    if (data.get("assets") or {}).get("is_updating") is True:
+        return _busy("asset_import", 500)
 
     # Tests running: fail fast for tools that require exclusivity.
     if requires_no_tests:
@@ -99,12 +135,21 @@ async def preflight(
                 state_resp = await get_editor_state(ctx)
                 state = state_resp.model_dump() if hasattr(
                     state_resp, "model_dump") else state_resp
-                data = state.get("data") if isinstance(state, dict) else None
+                data = state.get("data") if isinstance(state, dict) and state.get("success") is True else None
                 if not isinstance(data, dict):
-                    return None
+                    return _busy("editor_state_unconfirmed", 500)
+                if (data.get("staleness") or {}).get("is_stale") is True:
+                    return _busy("editor_state_unconfirmed", 500)
+                assets = data.get("assets") or {}
+                if (assets.get("refresh") or {}).get("is_refresh_in_progress") is True:
+                    return _busy("refresh_pending", 500)
+                if assets.get("is_updating") is True:
+                    return _busy("asset_import", 500)
+                if requires_no_tests and (data.get("tests") or {}).get("is_running") is True:
+                    return _busy("tests_running", 5000)
+                if refreshed and (data.get("assets") or {}).get("external_changes_dirty") is True:
+                    return _busy("external_changes_pending", 500)
             except Exception:
-                return None
+                return _busy("editor_state_unconfirmed", 500)
 
-    # Staleness: if the snapshot is stale, proceed (tools will still run), but callers that read resources can back off.
-    # In future we may make this strict for some tools.
     return None

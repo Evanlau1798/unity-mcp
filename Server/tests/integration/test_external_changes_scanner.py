@@ -23,9 +23,11 @@ def test_external_changes_scanner_marks_dirty_and_clears(tmp_path, monkeypatch):
     p = root / "Assets" / "x.txt"
     p.write_text("hi")
 
-    # Baseline scan: should not be dirty.
+    # Observation cannot prove Unity imported the initial files.
     first = s.update_and_get(inst)
-    assert first["external_changes_dirty"] is False
+    assert first["external_changes_dirty"] is True
+    assert s.acknowledge(inst, s.capture(inst))
+    assert s.update_and_get(inst)["external_changes_dirty"] is False
 
     # Touch the file and scan again: should become dirty.
     now = time.time()
@@ -72,9 +74,11 @@ def test_external_changes_scanner_includes_file_dependency_roots(tmp_path, monke
     s = ExternalChangesScanner(scan_interval_ms=0, max_entries=10000)
     s.set_project_root(inst, str(root))
 
-    # Baseline scan captures current mtimes across project + external pkg
+    # Establish and acknowledge a complete project + external package snapshot.
     baseline = s.update_and_get(inst)
-    assert baseline["external_changes_dirty"] is False
+    assert baseline["external_changes_dirty"] is True
+    assert s.acknowledge(inst, s.capture(inst))
+    assert s.update_and_get(inst)["external_changes_dirty"] is False
 
     # Touch external package file and scan again -> should mark dirty
     now = time.time()
@@ -82,5 +86,3 @@ def test_external_changes_scanner_includes_file_dependency_roots(tmp_path, monke
 
     changed = s.update_and_get(inst)
     assert changed["external_changes_dirty"] is True
-
-

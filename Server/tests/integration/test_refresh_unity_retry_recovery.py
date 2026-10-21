@@ -1,43 +1,52 @@
 import pytest
 
-from models import MCPResponse
-from services.state.external_changes_scanner import external_changes_scanner
-from services.state.external_changes_scanner import ExternalChangesState
-
+from services.state.external_changes_scanner import ExternalChangesScanner
+import services.tools.refresh_unity as refresh_mod
 from .test_helpers import DummyContext
 
 
 @pytest.mark.asyncio
-async def test_refresh_unity_recovers_from_retry_disconnect(monkeypatch):
-    """
-    Option A: if Unity disconnects and the transport returns hint=retry, refresh_unity(wait_for_ready=true)
-    should poll readiness and then return success + clear external dirty.
-    """
-    from services.tools.refresh_unity import refresh_unity
+async def test_refresh_unity_recovers_from_retry_disconnect(monkeypatch, tmp_path):
+    """A lost mutation reply is recovered only from the same native receipt."""
+    instance = "UnityMCPTests@receipt-recovery"
+    root = tmp_path / "Project"
+    (root / "Assets").mkdir(parents=True)
+    (root / "Assets" / "Source.cs").write_text("// source", encoding="utf-8")
+    scanner = ExternalChangesScanner(scan_interval_ms=0)
+    scanner.set_project_root(instance, str(root))
+    monkeypatch.setattr(refresh_mod, "external_changes_scanner", scanner)
+    monkeypatch.setattr(refresh_mod, "_refresh_attempts", {})
+    monkeypatch.setattr(refresh_mod, "_refresh_locks", {})
+    monkeypatch.setattr(refresh_mod, "_REFRESH_POLL_SECONDS", 0.001)
+    monkeypatch.setattr(refresh_mod, "_REFRESH_WAIT_SECONDS", 0.2)
+    operation = None
+    mutations = []
 
-    ctx = DummyContext()
-    await ctx.set_state("unity_instance", "UnityMCPTests@cc8756d4cce0805a")
+    async def state(_ctx):
+        return {"success": True, "data": {"advice": {"ready_for_tools": True}}}
 
-    # Seed dirty state
-    inst = "UnityMCPTests@cc8756d4cce0805a"
-    external_changes_scanner._states[inst] = ExternalChangesState(dirty=True, dirty_since_unix_ms=1)
-
-    async def fake_send_with_unity_instance(send_fn, unity_instance, command_type, params, **kwargs):
-        if command_type == "refresh_unity":
+    async def send(_fn, target, command, params, **kwargs):
+        nonlocal operation
+        assert target == instance and command == "refresh_unity"
+        if not params.get("query_only"):
+            mutations.append(params)
+            operation = params["operation_id"]
             return {"success": False, "error": "disconnected", "hint": "retry"}
-        elif command_type == "get_editor_state":
-            return {"success": True, "data": {"advice": {"ready_for_tools": True}}}
-        raise ValueError(f"Unexpected command: {command_type}")
+        if operation is None:
+            return {"success": False, "error": "refresh_operation_not_found",
+                    "data": {"reason": "refresh_operation_not_found"}}
+        assert params["operation_id"] == operation
+        return {"success": True, "data": {
+            "operation_id": operation, "completed": True, "status": "succeeded",
+        }}
 
-    import services.tools.refresh_unity as refresh_mod
-    monkeypatch.setattr(refresh_mod.unity_transport, "send_with_unity_instance", fake_send_with_unity_instance)
-
-    resp = await refresh_unity(ctx, wait_for_ready=True)
-    payload = resp.model_dump() if hasattr(resp, "model_dump") else resp
-    assert payload["success"] is True
-    assert payload.get("data", {}).get("recovered_from_disconnect") is True
-
-    # Dirty should be cleared
-    assert external_changes_scanner._states[inst].dirty is False
-
-
+    monkeypatch.setattr(refresh_mod.editor_state, "get_editor_state", state)
+    monkeypatch.setattr(refresh_mod.unity_transport, "send_with_unity_instance", send)
+    ctx = DummyContext()
+    await ctx.set_state("unity_instance", instance)
+    response = await refresh_mod.refresh_unity(ctx, wait_for_ready=True)
+    assert response.success is True
+    assert response.data["operation_id"] == operation
+    assert response.data["dirty_snapshot_acknowledged"] is True
+    assert len(mutations) == 1
+    assert scanner.capture(instance).dirty is False

@@ -22,7 +22,7 @@ namespace MCPForUnityTests.Editor.Services
     /// Exercises reload recovery without starting a nested Unity test run. The synthetic
     /// callbacks have the same result tree contract as TestRunnerApi.RunFinished.
     /// </summary>
-    public class TestJobManagerLifecycleTests
+    public partial class TestJobManagerLifecycleTests
     {
         private const BindingFlags PrivateStatic = BindingFlags.NonPublic | BindingFlags.Static;
         private const string JobsKey = "MCPForUnity.TestJobsV1";
@@ -43,6 +43,11 @@ namespace MCPForUnityTests.Editor.Services
         private bool _guardEnabled;
         private int _guardOptions;
         private byte[] _marker;
+        private Dictionary<string, (bool Exists, int Value)> _interactionPreferences;
+        private bool _throttleActive;
+        private bool _throttleCaptured;
+        private int _throttlePreviousIdle;
+        private int _throttlePreviousMode;
 
         private static FieldInfo ManagerField(string name) => typeof(TestJobManager).GetField(name, PrivateStatic);
         private static FieldInfo ServiceField => typeof(MCPServiceLocator).GetField("_testRunnerService", PrivateStatic);
@@ -67,6 +72,12 @@ namespace MCPForUnityTests.Editor.Services
             _guardEnabled = SessionState.GetBool(GuardPrefix + "OriginalEnabled", false);
             _guardOptions = SessionState.GetInt(GuardPrefix + "OriginalOptions", 0);
             _marker = File.Exists(MarkerPath) ? File.ReadAllBytes(MarkerPath) : null;
+            _interactionPreferences = new[] { "ApplicationIdleTime", "InteractionMode" }
+                .ToDictionary(key => key, key => (EditorPrefs.HasKey(key), EditorPrefs.GetInt(key)));
+            _throttleActive = SessionState.GetBool("TestRunnerNoThrottle_TestRunActive", false);
+            _throttleCaptured = SessionState.GetBool("TestRunnerNoThrottle_SettingsCaptured", false);
+            _throttlePreviousIdle = SessionState.GetInt("TestRunnerNoThrottle_PrevIdleTime", 4);
+            _throttlePreviousMode = SessionState.GetInt("TestRunnerNoThrottle_PrevInteractionMode", 0);
             _jobs.Clear();
             ManagerField("_currentJobId").SetValue(null, null);
             ServiceField.SetValue(null, null);
@@ -97,6 +108,16 @@ namespace MCPForUnityTests.Editor.Services
                 if (File.Exists(MarkerPath)) File.Delete(MarkerPath);
             }
             else File.WriteAllBytes(MarkerPath, _marker);
+            foreach (var preference in _interactionPreferences)
+            {
+                if (preference.Value.Exists) EditorPrefs.SetInt(preference.Key, preference.Value.Value);
+                else EditorPrefs.DeleteKey(preference.Key);
+            }
+            SessionState.SetBool("TestRunnerNoThrottle_TestRunActive", _throttleActive);
+            SessionState.SetBool("TestRunnerNoThrottle_SettingsCaptured", _throttleCaptured);
+            SessionState.SetInt("TestRunnerNoThrottle_PrevIdleTime", _throttlePreviousIdle);
+            SessionState.SetInt("TestRunnerNoThrottle_PrevInteractionMode", _throttlePreviousMode);
+            typeof(TestRunnerNoThrottle).GetMethod("ForceEditorToApplyInteractionPrefs", PrivateStatic).Invoke(null, null);
         }
 
         private TestJob AddJob(string id = "lifecycle-job")
@@ -105,6 +126,7 @@ namespace MCPForUnityTests.Editor.Services
             var job = new TestJob
             {
                 JobId = id, Mode = "EditMode", Status = TestJobStatus.Running,
+                UnityRunId = "synthetic-native-" + id,
                 StartedUnixMs = now, LastUpdateUnixMs = now,
                 FailuresSoFar = new List<TestJobFailure>()
             };
@@ -213,7 +235,8 @@ namespace MCPForUnityTests.Editor.Services
         [Test]
         public void RecoveredRun_CannotStartOverlappingRunAfterJobIsCleared()
         {
-            AddJob();
+            var job = AddJob();
+            job.UnityRunId = null; // Missing identity must remain owned after clear_stuck.
             var service = RestoreCallbacks();
             TestJobManager.ClearStuckJob();
             Assert.Throws<InvalidOperationException>(() => service.RunTestsAsync(TestMode.EditMode).GetAwaiter().GetResult());

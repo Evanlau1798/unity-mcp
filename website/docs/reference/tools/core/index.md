@@ -34,7 +34,7 @@ Essential scene, script, asset & editor tools (always on by default)
 - **[`manage_script_capabilities`](./manage_script_capabilities.md)** — Get manage_script capabilities (supported ops, limits, and guards).
 - **[`manage_tools`](./manage_tools.md)** — Manage which tool groups are visible in this session.
 - **[`read_console`](./read_console.md)** — Gets messages from or clears the Unity Editor console.
-- **[`refresh_unity`](./refresh_unity.md)** — Request a Unity asset database refresh and optionally a script compilation.
+- **[`refresh_unity`](./refresh_unity.md)** — Request a tracked Unity refresh and optionally compilation.
 - **[`script_apply_edits`](./script_apply_edits.md)** — Structured C# edits (methods/classes) with safer boundaries - prefer this over raw text.
 - **[`set_active_instance`](./set_active_instance.md)** — Set the active Unity instance for this client/session.
 - **[`validate_script`](./validate_script.md)** — Validate a C# script and return diagnostics.

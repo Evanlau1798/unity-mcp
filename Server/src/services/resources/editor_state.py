@@ -57,6 +57,9 @@ class EditorStateCompilation(BaseModel):
 
 
 class EditorStateRefresh(BaseModel):
+    operation_id: str | None = None
+    status: str | None = None
+    completed: bool | None = None
     is_refresh_in_progress: bool | None = None
     last_refresh_requested_unix_ms: int | None = None
     last_refresh_finished_unix_ms: int | None = None
@@ -65,6 +68,11 @@ class EditorStateRefresh(BaseModel):
 class EditorStateAssets(BaseModel):
     is_updating: bool | None = None
     external_changes_dirty: bool | None = None
+    external_changes_generation: int | None = None
+    external_changes_acknowledged_generation: int | None = None
+    external_changes_generations: dict[str, int] | None = None
+    external_changes_acknowledged_generations: dict[str, int] | None = None
+    external_changes_scan_complete: bool | None = None
     external_changes_last_seen_unix_ms: int | None = None
     external_changes_dirty_since_unix_ms: int | None = None
     external_changes_last_cleared_unix_ms: int | None = None
@@ -201,6 +209,8 @@ def _enrich_advice_and_staleness(state_v2: dict[str, Any]) -> dict[str, Any]:
         blocking.append("running_tests")
     if refresh.get("is_refresh_in_progress") is True:
         blocking.append("asset_refresh")
+    if assets.get("is_updating") is True:
+        blocking.append("asset_import")
     if is_stale:
         blocking.append("stale_status")
 
@@ -285,6 +295,10 @@ async def get_editor_state(ctx: Context) -> MCPResponse:
                 "dirty_since_unix_ms")
             assets["external_changes_last_cleared_unix_ms"] = ext.get(
                 "last_cleared_unix_ms")
+            for field in ("external_changes_generation", "external_changes_acknowledged_generation",
+                          "external_changes_generations", "external_changes_acknowledged_generations",
+                          "external_changes_scan_complete"):
+                assets[field] = ext.get(field)
     except Exception:
         pass
 

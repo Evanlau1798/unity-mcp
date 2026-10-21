@@ -26,7 +26,7 @@ Starts a Unity test run asynchronously and returns a job_id immediately. Poll wi
 | `include_failed_tests` | `bool` | — | Include details for failed/skipped tests only (default: false) |
 | `include_details` | `bool` | — | Include details for all tests (default: false) |
 | `init_timeout` | `int \| None` | — | Initialization timeout in milliseconds. PlayMode tests may need longer due to domain reload (default: 15000). Recommended: 120000 for PlayMode. |
-| `clear_stuck` | `bool` | — | Clear an orphaned running job instead of starting a run. Use when a job was lost to a domain reload and is blocking every subsequent run. |
+| `clear_stuck` | `bool` | — | Release an orphaned job only after Unity positively confirms native cleanup. Active or unknown native ownership is retained; this does not start a run. |
 
 ## Returns
 
@@ -99,6 +99,6 @@ PlayMode runs start with a domain reload, so the default 15 s `init_timeout` is 
 }
 ```
 
-Only clears the orphaned job; it does not start a run. The response says `Stuck job cleared.` or `No running job to clear.` Start the run again afterwards. `clear_stuck` does not check whether the job is still alive: it marks any job in the `running` state as failed. If a run is really in progress, `run_tests` answers `tests_running` with `retry_after_ms`; wait for it instead, because clearing it does not stop the tests already running in Unity.
+`clear_stuck` does not start a run. It releases an owned job only when the native runner positively confirms that this run is no longer active. Active or unknown native ownership remains held; continue observing the same `job_id` instead of submitting another run. A recorded result or runner error survives cleanup. Initialization timeout is a failed job outcome, but it is not evidence that Unity has stopped executing or restoring scenes. Both refresh and the next test launch remain blocked while `native_ownership_retained` or `native_cleanup_pending` is true.
 <!-- examples:end -->
 

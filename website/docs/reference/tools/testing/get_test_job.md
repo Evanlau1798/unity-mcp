@@ -21,7 +21,7 @@ Polls an async Unity test job by job_id.
 | `job_id` | `str` | yes | Job id returned by run_tests |
 | `include_failed_tests` | `bool` | — | Include details for failed/skipped tests only (default: false) |
 | `include_details` | `bool` | — | Include details for all tests (default: false) |
-| `wait_timeout` | `int \| None` | — | If set, wait up to this many seconds for tests to complete before returning. Reduces polling frequency and avoids client-side loop detection. Recommended: 30-60 seconds. Returns immediately if tests complete sooner. |
+| `wait_timeout` | `int \| None` | — | Total observation deadline in seconds, including routing, requests and polling. A timeout does not cancel or restart the job; poll the same job_id again. Recommended: 30-60 seconds. Inspect native ownership before starting another run. |
 
 ## Returns
 
@@ -42,7 +42,7 @@ A `dict` containing the Unity response. The exact shape depends on the action.
 }
 ```
 
-With `wait_timeout`, the server polls Unity every 2 seconds and returns as soon as `status` is `succeeded`, `failed` or `cancelled` — or after 60 s with the current progress, in which case call it again. This avoids a tight client-side polling loop.
+`wait_timeout` is one total observation deadline covering instance routing, requests, focus observation and polling sleeps. It returns a terminal job result as soon as it is observed, or the last real progress when the deadline expires. A timeout never cancels or relaunches the job: call `get_test_job` again with the same `job_id`. If Unity becomes unreachable, the last observation carries `wait_timed_out`, `observation_is_stale`, `observation_age_seconds` and `observation_error`; if no valid observation exists, the response reports `job_status_unknown` rather than inventing a running or failed result.
 
 ### Check progress without waiting
 
@@ -54,7 +54,7 @@ With `wait_timeout`, the server polls Unity every 2 seconds and returns as soon 
 }
 ```
 
-Returns straight away. `data.progress` has `completed` / `total`, the test currently running, and `failures_so_far`. `data.result` (`summary`, plus a `results` list when `include_details` or `include_failed_tests` is set) is only filled when the job succeeded: a run with failing tests ends as `failed` with `result: null`, so read the failures from `data.progress.failures_so_far` (at most 25; `failures_capped` turns `true` once 25 are recorded, so there may be more). `data.error` stays `null` for failing tests; it is only set when the job itself did not finish normally (did not start in time, threw, was canceled, was cleared with `clear_stuck`, or was orphaned by a domain reload).
+Returns the next available observation. `data.progress` includes `completed` / `total`, the current test and `failures_so_far` (capped at 25). `data.result` retains the runner summary and requested test details for completed runs, including runs with failing tests. `data.error` describes a runner or initialization failure. A terminal `status` describes the outcome, while `native_ownership_retained` and `native_cleanup_pending` describe whether Unity still owns cleanup. Keep observing that same job until both are false before starting another run. `native_run_id`, `native_run_started` and `initialization_timed_out` provide the corresponding native lifecycle evidence.
 
 If Unity is in the background and the job has not moved for 3 s, both this call and the `wait_timeout` form start a focus nudge that brings the Unity window to the front for a few seconds and then switches back. This form runs it in the background, so the response is not delayed.
 
