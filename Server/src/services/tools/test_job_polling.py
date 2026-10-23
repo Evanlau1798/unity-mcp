@@ -7,10 +7,14 @@ from typing import Any
 
 
 _TERMINAL = {"succeeded", "failed", "cancelled"}
-_TRANSIENT_REASONS = {"reloading", "domain_reload", "unity_unavailable", "unavailable", "timeout"}
+_TRANSIENT_REASONS = {
+    "reloading", "domain_reload", "unity_unavailable", "unavailable",
+    "no_unity_session", "stale_connection", "timeout",
+}
 _TRANSIENT_TEXT = (
-    "unavailable", "connection closed", "disconnected", "connection aborted",
-    "connection reset", "could not connect", "timeout", "timed out",
+    "unavailable", "not available", "connection closed", "disconnected",
+    "connection aborted", "connection reset", "could not connect",
+    "timeout", "timed out",
 )
 
 

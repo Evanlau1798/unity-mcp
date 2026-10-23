@@ -99,6 +99,52 @@ async def test_transient_unavailable_retries_only_the_same_job(poll_module, monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["no_unity_session", "stale_connection"])
+async def test_structured_session_unavailable_resumes_same_job(poll_module, monkeypatch, reason):
+    accelerate_poll_sleeps(monkeypatch)
+    observed = []
+
+    async def fetch(_send, _instance, command, params, **_kwargs):
+        observed.append((command, params["job_id"]))
+        if len(observed) == 1:
+            return {"success": False, "error": "Unity session not available; please retry",
+                    "hint": "retry", "data": {"reason": reason, "retry_after_ms": 250}}
+        return running("job-1") if len(observed) == 2 else {
+            "success": True, "data": {"job_id": "job-1", "status": "succeeded"}
+        }
+
+    monkeypatch.setattr(poll_module.unity_transport, "send_with_unity_instance", fetch)
+    result = await poll_module.get_test_job(
+        DummyContext(), job_id="job-1", wait_timeout=0.1,
+    )
+    assert result.success is True
+    assert result.data.status == "succeeded"
+    assert observed == [("get_test_job", "job-1")] * 3
+
+
+@pytest.mark.asyncio
+async def test_unavailable_after_running_preserves_stale_observation(poll_module, monkeypatch):
+    accelerate_poll_sleeps(monkeypatch)
+    calls = []
+
+    async def fetch(_send, _instance, command, params, **_kwargs):
+        calls.append(params["job_id"])
+        if len(calls) == 1:
+            return running("job-1")
+        return {"success": False, "error": "Unity session not available; please retry",
+                "hint": "retry", "data": {"reason": "no_unity_session", "retry_after_ms": 250}}
+
+    monkeypatch.setattr(poll_module.unity_transport, "send_with_unity_instance", fetch)
+    result = await poll_module.get_test_job(DummyContext(), job_id="job-1", wait_timeout=0.02)
+    assert result.success is True
+    assert result.data.status == "running"
+    assert result.data.observation_is_stale is True
+    assert result.data.wait_timed_out is True
+    assert len(calls) >= 2
+    assert set(calls) == {"job-1"}
+
+
+@pytest.mark.asyncio
 async def test_timeout_preserves_last_observed_running_status(poll_module, monkeypatch):
     mod = poll_module
     original_sleep = accelerate_poll_sleeps(monkeypatch)
@@ -199,6 +245,23 @@ async def test_native_ownership_metadata_survives_poll_response(poll_module, mon
     result = await poll_module.get_test_job(DummyContext(), job_id="job-1")
     observed = result.data.model_dump()
     assert {key: observed.get(key) for key in ownership} == ownership
+
+
+@pytest.mark.asyncio
+async def test_native_job_wall_time_and_observation_timestamp_are_retained(poll_module, monkeypatch):
+    async def fetch(*_args, **_kwargs):
+        return {
+            "success": True, "data": {
+                "job_id": "job-1", "status": "succeeded",
+                "started_unix_ms": 1000, "finished_unix_ms": 1642,
+                "job_wall_duration_ms": 642, "observed_at_unix_ms": 2000,
+            },
+        }
+
+    monkeypatch.setattr(poll_module.unity_transport, "send_with_unity_instance", fetch)
+    result = await poll_module.get_test_job(DummyContext(), job_id="job-1")
+    assert result.data.job_wall_duration_ms == 642
+    assert result.data.observed_at_unix_ms == 2000
 
 
 def reload_observation(kind):
