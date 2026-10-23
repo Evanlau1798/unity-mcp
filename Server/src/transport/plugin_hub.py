@@ -344,10 +344,17 @@ class PluginHub(WebSocketEndpoint):
             )
             try:
                 await websocket.send_json(msg.model_dump())
-            except Exception as exc:
-                # If send fails (socket already closing), fail the future so callers don't hang.
+            except BaseException:
+                # We have not started awaiting this Future yet. Giving it an
+                # exception creates an orphaned "Future exception was never
+                # retrieved" warning when send_json fails on a closed socket.
+                # Disconnect cleanup may already have completed the Future,
+                # in which case consume that exception before re-raising the
+                # original transport failure (including cancellation).
                 if not future.done():
-                    future.set_exception(exc)
+                    future.cancel()
+                elif not future.cancelled():
+                    future.exception()
                 raise
             try:
                 result = await asyncio.wait_for(future, timeout=server_wait_s)
