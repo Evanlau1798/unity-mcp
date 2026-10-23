@@ -34,6 +34,12 @@ namespace MCPForUnity.Editor.Services
                 started_unix_ms = job.StartedUnixMs,
                 finished_unix_ms = job.FinishedUnixMs,
                 last_update_unix_ms = job.LastUpdateUnixMs,
+                // Wall clock spans native job start to native terminal. NUnit
+                // summary.durationSeconds measures a different interval.
+                job_wall_duration_ms = job.FinishedUnixMs.HasValue &&
+                    job.FinishedUnixMs.Value >= job.StartedUnixMs
+                    ? job.FinishedUnixMs.Value - job.StartedUnixMs : (long?)null,
+                observed_at_unix_ms = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 native_run_id = job.UnityRunId,
                 native_run_started = job.NativeRunStarted,
                 initialization_timed_out = job.InitializationTimedOut,

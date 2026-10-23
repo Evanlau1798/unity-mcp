@@ -315,6 +315,9 @@ class GetTestJobData(BaseModel):
     started_unix_ms: int | None = None
     finished_unix_ms: int | None = None
     last_update_unix_ms: int | None = None
+    # Native persisted timestamps, independent of NUnit summary.durationSeconds.
+    job_wall_duration_ms: int | None = None
+    observed_at_unix_ms: int | None = None
     progress: TestJobProgress | None = None
     error: str | None = None
     result: RunTestsResult | None = None
