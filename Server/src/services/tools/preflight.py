@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from typing import Any
+from typing import Any, Literal
 
 from models import MCPResponse
 
@@ -22,6 +22,38 @@ def _busy(reason: str, retry_after_ms: int) -> MCPResponse:
         hint="retry",
         data={"reason": reason, "retry_after_ms": int(retry_after_ms)},
     )
+
+
+def _refresh_scope(assets: dict[str, Any]) -> tuple[Literal["assets", "scripts", "all"], Literal["none", "request"]]:
+    """Select the minimal safe refresh from a complete generation snapshot.
+
+    Incomplete, absent, or inconsistent scanner data retains the previous
+    conservative full-refresh behavior. Project/Package settings changes are
+    already classified into both generations by the external scanner.
+    """
+    if assets.get("external_changes_scan_complete") is not True:
+        return "all", "request"
+    observed = assets.get("external_changes_generations")
+    acknowledged = assets.get("external_changes_acknowledged_generations")
+    if not isinstance(observed, dict) or not isinstance(acknowledged, dict):
+        return "all", "request"
+    try:
+        scopes = []
+        for scope in ("assets", "scripts"):
+            seen = observed[scope]
+            ack = acknowledged[scope]
+            if (type(seen) is not int or type(ack) is not int
+                    or seen < 0 or ack < 0 or ack > seen):
+                return "all", "request"
+            if seen > ack:
+                scopes.append(scope)
+    except (KeyError, TypeError):
+        return "all", "request"
+    if scopes == ["assets"]:
+        return "assets", "none"
+    if scopes == ["scripts"]:
+        return "scripts", "request"
+    return "all", "request"
 
 
 async def preflight(
@@ -66,14 +98,19 @@ async def preflight(
     # identity, then obtain a new snapshot instead of reusing pre-refresh state.
     refreshed = False
     assets = data.get("assets") or {}
-    if (assets.get("refresh") or {}).get("is_refresh_in_progress") is True and not refresh_if_dirty:
+    # A refresh that is already underway must be reattached to its original
+    # receipt even when the external-dirty bit is currently false. The
+    # refresh tracker handles this as a query, never as a second mutation.
+    refreshing = (assets.get("refresh") or {}).get("is_refresh_in_progress") is True
+    if refreshing and not refresh_if_dirty:
         return _busy("refresh_pending", 500)
     if refresh_if_dirty:
-        if assets.get("external_changes_dirty") is True or (assets.get("refresh") or {}).get("is_refresh_in_progress") is True:
+        if assets.get("external_changes_dirty") is True or refreshing:
+            scope, compile_mode = _refresh_scope(assets)
             try:
                 from services.tools.refresh_unity import refresh_unity
                 response = await refresh_unity(
-                    ctx, mode="if_dirty", scope="all", compile="request", wait_for_ready=True,
+                    ctx, mode="if_dirty", scope=scope, compile=compile_mode, wait_for_ready=True,
                 )
                 payload = response.model_dump() if hasattr(response, "model_dump") else response
             except Exception:

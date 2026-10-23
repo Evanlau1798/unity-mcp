@@ -109,6 +109,61 @@ async def test_unavailable_or_stale_post_refresh_state_blocks(guards, fresh):
 
 
 @pytest.mark.asyncio
+async def test_refresh_in_progress_reattaches_and_preserves_pending_receipt(guards):
+    get_state, refresh = guards
+    get_state.return_value = state(dirty=True, refreshing=True)
+    refresh.return_value = MCPResponse(
+        success=True, data={"completed": False, "operation_id": "refresh-A"},
+    )
+    result = await preflight_mod.preflight(DummyContext(), refresh_if_dirty=True)
+    assert result.success is False
+    assert result.data["reason"] == "refresh_pending"
+    assert result.data["refresh"]["data"]["operation_id"] == "refresh-A"
+    refresh.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dirty_scopes,expected_scope,expected_compile", [
+    (("assets",), "assets", "none"),
+    (("scripts",), "scripts", "request"),
+    (("assets", "scripts"), "all", "request"),
+])
+async def test_preflight_refreshes_only_observed_dirty_scopes(
+    guards, dirty_scopes, expected_scope, expected_compile,
+):
+    get_state, refresh = guards
+    before = state(dirty=True)
+    before["data"]["assets"].update({
+        "external_changes_scan_complete": True,
+        "external_changes_generations": {
+            name: int(name in dirty_scopes) for name in ("assets", "scripts")
+        },
+        "external_changes_acknowledged_generations": {"assets": 0, "scripts": 0},
+    })
+    get_state.side_effect = [before, state(dirty=False)]
+    result = await preflight_mod.preflight(DummyContext(), refresh_if_dirty=True)
+    assert result is None
+    refresh.assert_awaited_once()
+    assert refresh.await_args.kwargs["scope"] == expected_scope
+    assert refresh.await_args.kwargs["compile"] == expected_compile
+
+
+@pytest.mark.asyncio
+async def test_unknown_scan_uses_conservative_full_refresh(guards):
+    get_state, refresh = guards
+    before = state(dirty=True)
+    before["data"]["assets"].update({
+        "external_changes_scan_complete": False,
+        "external_changes_generations": {"assets": 2, "scripts": 0},
+        "external_changes_acknowledged_generations": {"assets": 0, "scripts": 0},
+    })
+    get_state.side_effect = [before, state(dirty=False)]
+    assert await preflight_mod.preflight(DummyContext(), refresh_if_dirty=True) is None
+    assert refresh.await_args.kwargs["scope"] == "all"
+    assert refresh.await_args.kwargs["compile"] == "request"
+
+
+@pytest.mark.asyncio
 async def test_existing_test_owner_is_checked_before_refresh(guards):
     get_state, refresh = guards
     get_state.return_value = state(dirty=True, running=True)

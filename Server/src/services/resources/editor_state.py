@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 from typing import Any
@@ -247,9 +248,17 @@ async def get_editor_state(ctx: Context) -> MCPResponse:
 
     state_v2 = response.get("data") if isinstance(
         response, dict) and isinstance(response.get("data"), dict) else {}
+    if not isinstance(state_v2, dict):
+        state_v2 = {}
     state_v2.setdefault("schema_version", "unity-mcp/editor_state@2")
     state_v2.setdefault("observed_at_unix_ms", _now_unix_ms())
     state_v2.setdefault("sequence", 0)
+    # A previously stale native snapshot should stay stale; only reobserve
+    # when this request's own supplemental scanning caused the expiration.
+    native_age_at_receive_ms = 2001
+    native_observed_ms = state_v2.get("observed_at_unix_ms")
+    if isinstance(native_observed_ms, (int, float)):
+        native_age_at_receive_ms = max(0, _now_unix_ms() - int(native_observed_ms))
 
     # Ensure the returned snapshot is clearly associated with the targeted instance.
     unity_section = state_v2.get("unity")
@@ -301,6 +310,48 @@ async def get_editor_state(ctx: Context) -> MCPResponse:
                 assets[field] = ext.get(field)
     except Exception:
         pass
+
+    # Supplemental project/scanner work can make an initially fresh native
+    # snapshot stale. In that case, try one bounded *read-only* reobservation
+    # after the scan, without changing the captured external generations.
+    if (native_age_at_receive_ms <= 2000
+            and isinstance(native_observed_ms, (int, float))
+            and _now_unix_ms() - int(native_observed_ms) > 2000):
+        try:
+            latest = await asyncio.wait_for(
+                unity_transport.send_with_unity_instance(
+                    async_send_command_with_retry, unity_instance, "get_editor_state", {},
+                ), timeout=1.5,
+            )
+            latest_data = latest.get("data") if isinstance(latest, dict) and latest.get("success") is True else None
+            if isinstance(latest_data, dict):
+                latest_unity = latest_data.get("unity") or {}
+                latest_instance_id = latest_unity.get("instance_id") if isinstance(latest_unity, dict) else None
+                instance_id = unity_section.get("instance_id")
+                latest_observed_ms = latest_data.get("observed_at_unix_ms")
+                if ((not latest_instance_id or latest_instance_id == instance_id)
+                        and isinstance(latest_observed_ms, (int, float))
+                        and latest_observed_ms >= native_observed_ms):
+                    extra_assets = state_v2.get("assets") or {}
+                    latest_assets = latest_data.get("assets")
+                    if not isinstance(latest_assets, dict):
+                        latest_assets = {}
+                        latest_data["assets"] = latest_assets
+                    if isinstance(extra_assets, dict):
+                        latest_assets.update({
+                            key: value for key, value in extra_assets.items()
+                            if key.startswith("external_changes_")
+                        })
+                    latest_data.setdefault("schema_version", "unity-mcp/editor_state@2")
+                    latest_data.setdefault("sequence", 0)
+                    if not latest_instance_id and isinstance(latest_unity, dict):
+                        latest_unity["instance_id"] = instance_id
+                        latest_data["unity"] = latest_unity
+                    state_v2 = latest_data
+        except (asyncio.TimeoutError, ConnectionError, OSError, ValueError, TypeError):
+            # The original staleness assessment stays authoritative if Unity
+            # cannot provide a fresh, identity-matched observation.
+            pass
 
     state_v2 = _enrich_advice_and_staleness(state_v2)
 
