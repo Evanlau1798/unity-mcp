@@ -136,10 +136,64 @@ async def preflight(
             except Exception:
                 return _busy("editor_state_unconfirmed", 500)
             refreshed = True
-            if ((data.get("assets") or {}).get("refresh") or {}).get("is_refresh_in_progress") is True:
+            after_assets = data.get("assets") or {}
+            if (after_assets.get("refresh") or {}).get("is_refresh_in_progress") is True:
                 return _busy("refresh_pending", 500)
-            if (data.get("assets") or {}).get("external_changes_dirty") is True:
-                return _busy("external_changes_pending", 500)
+            if after_assets.get("external_changes_dirty") is True:
+                # A completed script refresh can legitimately leave a *new*
+                # assets generation dirty. Catch up exactly once, with no
+                # compilation, before rejecting a requested new test. A script
+                # edit, incomplete scan, unACKed first refresh or changing
+                # editor state must still fail closed. No unbounded retry loop.
+                compilation = data.get("compilation") or {}
+                safe_catchup = (
+                    requires_no_tests
+                    and receipt.get("status") == "succeeded"
+                    and receipt.get("dirty_snapshot_acknowledged") is True
+                    and _refresh_scope(after_assets) == ("assets", "none")
+                    and after_assets.get("is_updating") is not True
+                    and compilation.get("is_compiling") is not True
+                    and compilation.get("is_domain_reload_pending") is not True
+                    and (data.get("tests") or {}).get("is_running") is not True
+                )
+                if not safe_catchup:
+                    return _busy("external_changes_pending", 500)
+                try:
+                    catchup = await refresh_unity(
+                        ctx, mode="if_dirty", scope="assets", compile="none",
+                        wait_for_ready=True,
+                    )
+                    receipt2 = catchup.model_dump() if isinstance(catchup, MCPResponse) else catchup
+                except Exception:
+                    return _busy("refresh_unconfirmed", 500)
+                if not isinstance(receipt2, dict):
+                    return _busy("refresh_unconfirmed", 500)
+                if receipt2.get("success") is not True:
+                    return MCPResponse(**receipt2)
+                catchup_data = receipt2.get("data")
+                if not isinstance(catchup_data, dict) or catchup_data.get("completed") is not True:
+                    return MCPResponse(
+                        success=False, error="busy", message="refresh_pending", hint="retry",
+                        data={"reason": "refresh_pending", "retry_after_ms": 500, "refresh": receipt2},
+                    )
+                if (catchup_data.get("status") != "succeeded"
+                        or catchup_data.get("dirty_snapshot_acknowledged") is not True):
+                    return _busy("external_changes_pending", 500)
+                try:
+                    next_state = await get_editor_state(ctx)
+                    next_state = next_state.model_dump() if hasattr(next_state, "model_dump") else next_state
+                except Exception:
+                    return _busy("editor_state_unconfirmed", 500)
+                if not isinstance(next_state, dict) or next_state.get("success") is not True:
+                    return _busy("editor_state_unconfirmed", 500)
+                data = next_state.get("data")
+                if not isinstance(data, dict) or (data.get("staleness") or {}).get("is_stale") is True:
+                    return _busy("editor_state_unconfirmed", 500)
+                assets_now = data.get("assets") or {}
+                if (assets_now.get("refresh") or {}).get("is_refresh_in_progress") is True:
+                    return _busy("refresh_pending", 500)
+                if assets_now.get("external_changes_dirty") is True:
+                    return _busy("external_changes_pending", 500)
 
     if (data.get("assets") or {}).get("is_updating") is True:
         return _busy("asset_import", 500)

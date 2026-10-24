@@ -164,6 +164,124 @@ async def test_unknown_scan_uses_conservative_full_refresh(guards):
 
 
 @pytest.mark.asyncio
+async def test_post_refresh_new_assets_only_generation_is_acked_before_test_admission(guards):
+    state_read, refresh = guards
+
+    initial = state(dirty=True)
+    initial["data"]["assets"].update({
+        "external_changes_scan_complete": True,
+        "external_changes_generations": {"scripts": 1, "assets": 1},
+        "external_changes_acknowledged_generations": {"scripts": 0, "assets": 0},
+    })
+    # First full refresh ACKed scripts, but a *new* assets generation arrived.
+    assets_only = state(dirty=True)
+    assets_only["data"]["assets"].update({
+        "external_changes_scan_complete": True,
+        "external_changes_generations": {"scripts": 1, "assets": 2},
+        "external_changes_acknowledged_generations": {"scripts": 1, "assets": 1},
+    })
+    clean = state()
+    clean["data"]["assets"].update({
+        "external_changes_scan_complete": True,
+        "external_changes_generations": {"scripts": 1, "assets": 2},
+        "external_changes_acknowledged_generations": {"scripts": 1, "assets": 2},
+    })
+    state_read.side_effect = [initial, assets_only, clean]
+    refresh.side_effect = [
+        MCPResponse(success=True, data={"completed": True, "status": "succeeded", "operation_id": "refresh-1", "dirty_snapshot_acknowledged": True}),
+        MCPResponse(success=True, data={"completed": True, "status": "succeeded", "operation_id": "refresh-2", "dirty_snapshot_acknowledged": True}),
+    ]
+    result = await preflight_mod.preflight(
+        DummyContext(), refresh_if_dirty=True, requires_no_tests=True, wait_for_no_compile=True,
+    )
+    assert result is None
+    assert state_read.await_count == 3
+    assert refresh.await_count == 2
+    assert (refresh.await_args_list[0].kwargs["scope"], refresh.await_args_list[0].kwargs["compile"]) == ("all", "request")
+    assert (refresh.await_args_list[1].kwargs["scope"], refresh.await_args_list[1].kwargs["compile"]) == ("assets", "none")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dirty_scripts,scan_complete,compiling", [
+    (True, True, False),
+    (False, False, False),
+    (False, True, True),
+])
+async def test_post_refresh_does_not_auto_refresh_if_not_safe_assets_only(
+    guards, dirty_scripts, scan_complete, compiling,
+):
+    state_read, refresh = guards
+    new = state(dirty=True, compiling=compiling)
+    new["data"]["assets"].update({
+        "external_changes_scan_complete": scan_complete,
+        "external_changes_generations": {"scripts": 2 if dirty_scripts else 1, "assets": 2},
+        "external_changes_acknowledged_generations": {"scripts": 1, "assets": 1},
+    })
+    state_read.side_effect = [state(dirty=True), new]
+    result = await preflight_mod.preflight(
+        DummyContext(), refresh_if_dirty=True, requires_no_tests=True, wait_for_no_compile=True,
+    )
+    assert result is not None
+    assert result.success is False
+    assert refresh.await_count == 1
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("catchup_case,expected_reason", [
+    ("unacknowledged", "external_changes_pending"),
+    ("pending", "refresh_pending"),
+    ("new_dirty", "external_changes_pending"),
+    ("stale_state", "editor_state_unconfirmed"),
+])
+async def test_asset_only_catchup_never_treats_uncertain_receipt_or_new_generation_as_ready(
+    guards, catchup_case, expected_reason,
+):
+    get_state, refresh = guards
+    new_assets = state(dirty=True)
+    new_assets["data"]["assets"].update({
+        "external_changes_scan_complete": True,
+        "external_changes_generations": {"scripts": 1, "assets": 2},
+        "external_changes_acknowledged_generations": {"scripts": 1, "assets": 1},
+    })
+    remaining = new_assets if catchup_case == "new_dirty" else state(stale=catchup_case == "stale_state")
+    get_state.side_effect = [state(dirty=True), new_assets, remaining]
+    second_receipt = {"completed": True, "status": "succeeded", "operation_id": "refresh-2",
+                      "dirty_snapshot_acknowledged": catchup_case != "unacknowledged"}
+    if catchup_case == "pending":
+        second_receipt.update(completed=False, status="accepted")
+    refresh.side_effect = [
+        MCPResponse(success=True, data={"completed": True, "status": "succeeded", "operation_id": "refresh-1",
+                                        "dirty_snapshot_acknowledged": True}),
+        MCPResponse(success=True, data=second_receipt),
+    ]
+    blocked = await preflight_mod.preflight(
+        DummyContext(), refresh_if_dirty=True, requires_no_tests=True,
+    )
+    assert blocked.success is False
+    assert blocked.data["reason"] == expected_reason
+    assert refresh.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_unacknowledged_initial_refresh_does_not_start_assets_catchup(guards):
+    get_state, refresh = guards
+    dirty = state(dirty=True)
+    dirty["data"]["assets"].update({
+        "external_changes_scan_complete": True,
+        "external_changes_generations": {"scripts": 1, "assets": 2},
+        "external_changes_acknowledged_generations": {"scripts": 1, "assets": 1},
+    })
+    get_state.side_effect = [state(dirty=True), dirty]
+    refresh.return_value = MCPResponse(
+        success=True, data={"completed": True, "status": "succeeded",
+                            "operation_id": "refresh-1", "dirty_snapshot_acknowledged": False},
+    )
+    blocked = await preflight_mod.preflight(DummyContext(), refresh_if_dirty=True, requires_no_tests=True)
+    assert blocked.success is False
+    assert blocked.data["reason"] == "external_changes_pending"
+    assert refresh.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_existing_test_owner_is_checked_before_refresh(guards):
     get_state, refresh = guards
     get_state.return_value = state(dirty=True, running=True)
