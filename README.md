@@ -73,6 +73,17 @@ the upstream release version strings alone do not identify these changes.
 - **Safe test admission:** `external_changes_pending`, `refresh_pending`, or
   retained native cleanup ownership block the next test. Wait for the original
   refresh to complete rather than launching the same native job repeatedly.
+  When an ACKed refresh leaves only a new, reliably observed assets generation,
+  test preflight performs **at most one** assets-only catch-up without compilation;
+  it never retries a new script generation, stale state, or failed ACK blindly.
+- **Compact job results:** terminal `get_test_job` replies include a maximum
+  of three result leaves and 1,024 characters per message, stack trace and
+  output field. Use `result_offset` and `detail_offset` on the **same job ID**
+  to retrieve the remaining original native content. The returned
+  `result_page`/`detail_page` metadata describes the available pages;
+  the native job and its original result are never changed. Progress failure
+  messages use 160-character windows with `message_next_offset` so the
+  same `detail_offset` can recover their original text even before terminal.
 - **Recoverable job polling:** `get_test_job` retries transient
   `no_unity_session` and `stale_connection` responses within the same
   `wait_timeout`, preserving the job ID and last confirmed status.

@@ -22,6 +22,8 @@ Polls an async Unity test job by job_id.
 | `include_failed_tests` | `bool` | — | Include details for failed/skipped tests only (default: false) |
 | `include_details` | `bool` | — | Include details for all tests (default: false) |
 | `wait_timeout` | `int \| None` | — | Total observation deadline in seconds, including routing, requests and polling. A timeout does not cancel or restart the job; poll the same job_id again. Recommended: 30-60 seconds. Inspect native ownership before starting another run. |
+| `result_offset` | `int` | — | Zero-based offset of terminal test-result leaves (3 results per page). Use result.result_page.next_offset on the same job_id to read more. |
+| `detail_offset` | `int` | — | Zero-based Unicode text offset for each leaf's message/stackTrace/output (1024 characters per field per page). Use detail_page.lengths to retrieve all chunks. |
 
 ## Returns
 
@@ -69,6 +71,29 @@ If Unity is in the background and the job has not moved for 3 s, both this call 
 }
 ```
 
-`include_details` returns all tests; `include_failed_tests` returns only failed and skipped ones, which keeps the response small on large suites.
+`include_details` selects all tests, while `include_failed_tests` selects failed and skipped ones. To avoid oversized and sometimes truncated MCP client envelopes, **only three leaf results appear in each reply**, and each `message`, `stackTrace` and `output` field is windowed to 1,024 Unicode characters. Full original native results remain available under the same job ID; a short reply does not mean the underlying evidence was discarded.
+
+### Retrieve additional result leaves and error text
+
+```json
+{
+  "job_id": "<the SAME job_id>",
+  "include_details": true,
+  "result_offset": 3
+}
+```
+
+Read `data.result.result_page.total`, `offset`, `returned` and `next_offset`. Continue at `next_offset` until null. Within one result leaf, if `detail_page.has_more_text` is true, use the **same** `result_offset` with `detail_offset: 1024`, `2048`, etc., until each of the `detail_page.lengths` is recovered. Text pagination is independent of result pagination.
+
+```json
+{
+  "job_id": "<the SAME job_id>",
+  "include_failed_tests": true,
+  "result_offset": 0,
+  "detail_offset": 1024
+}
+```
+
+`result_page.leaf_duration_sum_seconds` sums **only the returned page's selected leaf durations**. It is neither the overall native `job_wall_duration_ms` nor the NUnit root `summary.durationSeconds`. These figures can represent overlapping and different intervals and must not be added together. Progress `failures_so_far` keeps original test names with 160-character message windows; `message_truncated`, `message_total_chars` and `message_next_offset` expose the full length and next available 160-character slice. Requery the same job with `detail_offset` set to the indicated `message_next_offset` even for running jobs without terminal `data.result`.
 <!-- examples:end -->
 
