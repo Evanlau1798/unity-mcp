@@ -265,12 +265,14 @@ class RunTestsTestResult(BaseModel):
     message: str | None = None
     stackTrace: str | None = None
     output: str | None = None
+    detail_page: dict[str, Any] | None = None
 
 
 class RunTestsResult(BaseModel):
     mode: str
     summary: RunTestsSummary
     results: list[RunTestsTestResult] | None = None
+    result_page: dict[str, Any] | None = None
 
 
 class RunTestsStartData(BaseModel):
@@ -288,6 +290,9 @@ class RunTestsStartResponse(MCPResponse):
 class TestJobFailure(BaseModel):
     full_name: str | None = None
     message: str | None = None
+    message_total_chars: int | None = None
+    message_truncated: bool | None = None
+    message_next_offset: int | None = None
 
 
 class TestJobProgress(BaseModel):
@@ -451,7 +456,17 @@ async def get_test_job(
                             "Total observation deadline in seconds, including routing, requests and polling. "
                             "A timeout does not cancel or restart the job; poll the same job_id again. "
                             "Recommended: 30-60 seconds. Inspect native ownership before starting another run."] = None,
+    result_offset: Annotated[int,
+                             "Zero-based offset of terminal test-result leaves (3 results per page). "
+                             "Use result.result_page.next_offset on the same job_id to read more."] = 0,
+    detail_offset: Annotated[int,
+                             "Zero-based Unicode text offset for each leaf's message/stackTrace/output "
+                             "(1024 characters per field per page). Use detail_page.lengths to retrieve all chunks."] = 0,
 ) -> GetTestJobResponse | MCPResponse:
+    from services.tools.test_job_output import project_test_job
+
+    if result_offset < 0 or detail_offset < 0:
+        return MCPResponse(success=False, error="result_offset and detail_offset must be nonnegative")
     loop = asyncio.get_running_loop()
     deadline = loop.time() + float(wait_timeout) if wait_timeout and wait_timeout > 0 else None
     try:
@@ -486,7 +501,11 @@ async def get_test_job(
             )
 
         response = await job_polling.poll_test_job(_fetch_status, observe, job_id=job_id, deadline=deadline)
-        return GetTestJobResponse(**response) if response.get("success", True) else MCPResponse(**response)
+        if response.get("success") is True:
+            return GetTestJobResponse(**project_test_job(
+                response, result_offset=result_offset, detail_offset=detail_offset,
+            ))
+        return MCPResponse(**response)
 
     # No wait_timeout - return immediately (original behavior)
     response, observation_order = await _fetch_status()
@@ -498,4 +517,6 @@ async def get_test_job(
     await _update_job_nudge(
         unity_instance, user_id, job_id, data, wait=False, observation_order=observation_order,
     )
-    return GetTestJobResponse(**response)
+    return GetTestJobResponse(**project_test_job(
+        response, result_offset=result_offset, detail_offset=detail_offset,
+    ))
