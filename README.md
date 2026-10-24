@@ -26,11 +26,11 @@
 <details>
 <summary><strong>Recent Updates</strong></summary>
 
-* **[v10.0.0](https://github.com/CoplayDev/unity-mcp/releases/tag/v10.0.0)** (2026-06-30)
-* **[v9.7.3](https://github.com/CoplayDev/unity-mcp/releases/tag/v9.7.3)** (2026-06-15)
-* **[v9.7.1](https://github.com/CoplayDev/unity-mcp/releases/tag/v9.7.1)** (2026-05-24)
-* **[v9.7.0](https://github.com/CoplayDev/unity-mcp/releases/tag/v9.7.0)** (2026-05-22)
-* **[v9.6.8](https://github.com/CoplayDev/unity-mcp/releases/tag/v9.6.8)** (2026-04-27)
+* **[v10.3.0](https://github.com/CoplayDev/unity-mcp/releases/tag/v10.3.0)** (2026-10-04)
+* **[v10.2.0](https://github.com/CoplayDev/unity-mcp/releases/tag/v10.2.0)** (2026-09-01)
+* **[v10.1.2](https://github.com/CoplayDev/unity-mcp/releases/tag/v10.1.2)** (2026-08-02)
+* **[v10.1.0](https://github.com/CoplayDev/unity-mcp/releases/tag/v10.1.0)** (2026-07-13)
+* **[v10.0.2](https://github.com/CoplayDev/unity-mcp/releases/tag/v10.0.2)** (2026-07-13)
 
 Full history: [Release Notes](https://coplaydev.github.io/unity-mcp/releases).
 
@@ -41,7 +41,7 @@ Full history: [Release Notes](https://coplaydev.github.io/unity-mcp/releases).
 
 ## What it does
 
-Control the Unity Editor in natural language from any MCP client — create scenes & GameObjects, edit C# scripts, manage assets, run tests, profile, and build. 48 focused MCP tool entrypoints, any client, free & MIT.
+Control the Unity Editor in natural language from any MCP client — create scenes & GameObjects, edit C# scripts, manage assets, run tests, profile, and build. 50 focused MCP tool entrypoints, any client, free & MIT.
 
 **[Browse the full tool catalog →](https://coplaydev.github.io/unity-mcp/reference/tools/)**
 
@@ -57,6 +57,65 @@ Control the Unity Editor in natural language from any MCP client — create scen
 3. **Prompt** — *"Create a cube at the origin and add a Rigidbody."* The cube appears in seconds.
 
 ---
+
+## Performance and reliability — Evanlau1798 fork
+
+This fork improves refresh/test coordination, recovery across domain reload, and
+observability. **Pin the Unity package and Python server to the same commit SHA**;
+the upstream release version strings alone do not identify these changes.
+
+### Optimized workflow
+
+- **Generation-aware preflight:** assets-only changes request only an asset
+  import; scripts request compilation; mixed changes or incomplete scanner data
+  retain the conservative full refresh. A matching native completion receipt
+  acknowledges only the captured dirty generations.
+- **Safe test admission:** `external_changes_pending`, `refresh_pending`, or
+  retained native cleanup ownership block the next test. Wait for the original
+  refresh to complete rather than launching the same native job repeatedly.
+  When an ACKed refresh leaves only a new, reliably observed assets generation,
+  test preflight performs **at most one** assets-only catch-up without compilation;
+  it never retries a new script generation, stale state, or failed ACK blindly.
+- **Compact job results:** terminal `get_test_job` replies include a maximum
+  of three result leaves and 1,024 characters per message, stack trace and
+  output field. Use `result_offset` and `detail_offset` on the **same job ID**
+  to retrieve the remaining original native content. The returned
+  `result_page`/`detail_page` metadata describes the available pages;
+  the native job and its original result are never changed. Progress failure
+  messages use 160-character windows with `message_next_offset` so the
+  same `detail_offset` can recover their original text even before terminal.
+- **Recoverable job polling:** `get_test_job` retries transient
+  `no_unity_session` and `stale_connection` responses within the same
+  `wait_timeout`, preserving the job ID and last confirmed status.
+- **WebSocket send failure cleanup:** closes unawaited command Futures without
+  hiding the real transport error or replaying an uncertain mutation.
+- **Staleness-aware state:** if supplemental file scanning alone expires an
+  initially fresh native editor snapshot, request at most one bounded,
+  read-only reobservation. Unavailable or mismatched state remains stale.
+- **Unambiguous timing:** `get_test_job.data.job_wall_duration_ms` spans
+  native start to terminal, and `observed_at_unix_ms` timestamps the
+  observation. NUnit `result.summary.durationSeconds` is retained separately.
+
+### Measured earlier lifecycle-repair baseline
+
+CometTether, Windows / Unity 2022.3.22f1 / UTF 1.1.33:
+
+| Tool-call latency, median | Older CP02J sample | Lifecycle repair (12 h) |
+| --- | ---: | ---: |
+| `refresh_unity` | 73.6 s (n=12) | 2.58 s (n=139) |
+| `run_tests` admission | 72.0 s (n=10) | 0.66 s (n=108) |
+| `get_test_job` | 23.4 s (n=24) | 0.41 s (n=127) |
+
+The repaired 12-hour sample also contained 36 `external_changes_pending`
+admissions and 18 `no_unity_session` observations, which motivated this
+follow-up. **These are different workloads and observation windows, not a
+controlled benchmark of this newer patch or an overall development speedup.**
+A long job poll may be an intentional wait for a native test.
+
+For safe operation, edit coherent batches, read the exact refresh operation
+receipt and generation ACK, then start each test once and poll the *same* job ID
+until the terminal result and native cleanup release. A network timeout or
+outer `isError: false` does not establish underlying Unity success.
 
 ## Community
 

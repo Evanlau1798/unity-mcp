@@ -13,37 +13,25 @@ namespace MCPForUnityTests.Editor.Tools
     public class RefreshUnityTests
     {
         [Test]
-        public void HandleCommand_CompileNone_NoWait_CompletesSynchronously()
+        public void HandleCommand_Query_NoWait_CompletesSynchronously()
         {
-            // scope=scripts skips AssetDatabase.Refresh, compile=none skips the
-            // request, wait_for_ready=false skips both waits: nothing on this path
-            // yields, so the task must already be complete when it is handed back.
+            // Status reads must remain usable while tests run and must not
+            // schedule a refresh merely to determine whether a receipt exists.
+            var operationId = "missing-" + Guid.NewGuid().ToString("N");
             var task = RefreshUnity.HandleCommand(new JObject
             {
+                ["operation_id"] = operationId,
+                ["query_only"] = true,
                 ["mode"] = "if_dirty",
                 ["scope"] = "scripts",
                 ["compile"] = "none",
                 ["wait_for_ready"] = false,
             });
-
-            Assert.IsTrue(task.IsCompleted, "compile=none with wait_for_ready=false must not defer");
-
+            Assert.IsTrue(task.IsCompleted, "Queries must not wait through a reload.");
             var result = ToJObject(task.Result);
-            if (TestRunStatus.IsRunning)
-            {
-                // Under the bridge's run_tests the handler short-circuits before the
-                // refresh logic; that exit is synchronous too, and is all we can check.
-                Assert.IsFalse(result.Value<bool>("success"), result.ToString());
-                Assert.AreEqual("tests_running", result["data"]?["reason"]?.ToString(), result.ToString());
-                return;
-            }
-
-            Assert.IsTrue(result.Value<bool>("success"), result.ToString());
-            var data = result["data"];
-            Assert.IsFalse(data.Value<bool>("refresh_triggered"), result.ToString());
-            Assert.IsFalse(data.Value<bool>("compile_requested"), result.ToString());
-            Assert.AreEqual(JTokenType.Null, data["compile_started"].Type,
-                "compile_started must be null when no compile was waited for");
+            Assert.IsFalse(result.Value<bool>("success"), result.ToString());
+            Assert.AreEqual("refresh_operation_not_found", result["data"]?["reason"]?.ToString());
+            Assert.AreEqual(operationId, result["data"]?["operation_id"]?.ToString());
         }
 
         [Test]

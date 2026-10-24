@@ -20,6 +20,7 @@ from core.config import config
 from services.registry import mcp_for_unity_tool
 from services.tools import get_unity_instance_from_context
 from services.tools.preflight import preflight
+import services.tools.test_job_polling as job_polling
 import transport.unity_transport as unity_transport
 from transport.legacy.unity_connection import async_send_command_with_retry
 from transport.plugin_hub import PluginHub
@@ -264,12 +265,14 @@ class RunTestsTestResult(BaseModel):
     message: str | None = None
     stackTrace: str | None = None
     output: str | None = None
+    detail_page: dict[str, Any] | None = None
 
 
 class RunTestsResult(BaseModel):
     mode: str
     summary: RunTestsSummary
     results: list[RunTestsTestResult] | None = None
+    result_page: dict[str, Any] | None = None
 
 
 class RunTestsStartData(BaseModel):
@@ -287,6 +290,9 @@ class RunTestsStartResponse(MCPResponse):
 class TestJobFailure(BaseModel):
     full_name: str | None = None
     message: str | None = None
+    message_total_chars: int | None = None
+    message_truncated: bool | None = None
+    message_next_offset: int | None = None
 
 
 class TestJobProgress(BaseModel):
@@ -314,9 +320,21 @@ class GetTestJobData(BaseModel):
     started_unix_ms: int | None = None
     finished_unix_ms: int | None = None
     last_update_unix_ms: int | None = None
+    # Native persisted timestamps, independent of NUnit summary.durationSeconds.
+    job_wall_duration_ms: int | None = None
+    observed_at_unix_ms: int | None = None
     progress: TestJobProgress | None = None
     error: str | None = None
     result: RunTestsResult | None = None
+    native_run_id: str | None = None
+    native_cleanup_pending: bool | None = None
+    native_ownership_retained: bool | None = None
+    initialization_timed_out: bool | None = None
+    native_run_started: bool | None = None
+    wait_timed_out: bool | None = None
+    observation_is_stale: bool | None = None
+    observation_age_seconds: float | None = None
+    observation_error: dict[str, Any] | None = None
 
 
 class GetTestJobResponse(MCPResponse):
@@ -351,8 +369,8 @@ async def run_tests(
                             "Initialization timeout in milliseconds. PlayMode tests may need longer "
                             "due to domain reload (default: 15000). Recommended: 120000 for PlayMode."] = None,
     clear_stuck: Annotated[bool,
-                           "Clear an orphaned running job instead of starting a run. Use when a job "
-                           "was lost to a domain reload and is blocking every subsequent run."] = False,
+                           "Release an orphaned job only after Unity positively confirms native cleanup. "
+                           "Active or unknown native ownership is retained; this does not start a run."] = False,
 ) -> RunTestsStartResponse | MCPResponse:
     unity_instance = await get_unity_instance_from_context(ctx)
 
@@ -365,10 +383,9 @@ async def run_tests(
             unity_instance,
             "run_tests",
             {"clear_stuck": True},
+            retry_on_reload=False,
         )
-        if isinstance(response, dict):
-            return MCPResponse(**response)
-        return MCPResponse(success=False, error=str(response))
+        return MCPResponse(**job_polling.normalize_response(response))
 
     if init_timeout is not None and init_timeout <= 0:
         return MCPResponse(success=False, error="init_timeout must be a positive integer (milliseconds) or None")
@@ -408,13 +425,13 @@ async def run_tests(
         unity_instance,
         "run_tests",
         params,
+        retry_on_reload=False,
     )
 
-    if isinstance(response, dict):
-        if not response.get("success", True):
-            return MCPResponse(**response)
-        return RunTestsStartResponse(**response)
-    return MCPResponse(success=False, error=str(response))
+    response = job_polling.normalize_response(response)
+    if not response.get("success", True):
+        return MCPResponse(**response)
+    return RunTestsStartResponse(**response)
 
 
 @mcp_for_unity_tool(
@@ -436,12 +453,30 @@ async def get_test_job(
     include_details: Annotated[bool,
                                "Include details for all tests (default: false)"] = False,
     wait_timeout: Annotated[int | None,
-                            "If set, wait up to this many seconds for tests to complete before returning. "
-                            "Reduces polling frequency and avoids client-side loop detection. "
-                            "Recommended: 30-60 seconds. Returns immediately if tests complete sooner."] = None,
+                            "Total observation deadline in seconds, including routing, requests and polling. "
+                            "A timeout does not cancel or restart the job; poll the same job_id again. "
+                            "Recommended: 30-60 seconds. Inspect native ownership before starting another run."] = None,
+    result_offset: Annotated[int,
+                             "Zero-based offset of terminal test-result leaves (3 results per page). "
+                             "Use result.result_page.next_offset on the same job_id to read more."] = 0,
+    detail_offset: Annotated[int,
+                             "Zero-based Unicode text offset for each leaf's message/stackTrace/output "
+                             "(1024 characters per field per page). Use detail_page.lengths to retrieve all chunks."] = 0,
 ) -> GetTestJobResponse | MCPResponse:
-    unity_instance = await get_unity_instance_from_context(ctx)
-    user_id = await ctx.get_state("user_id") if config.http_remote_hosted else None
+    from services.tools.test_job_output import project_test_job
+
+    if result_offset < 0 or detail_offset < 0:
+        return MCPResponse(success=False, error="result_offset and detail_offset must be nonnegative")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + float(wait_timeout) if wait_timeout and wait_timeout > 0 else None
+    try:
+        unity_instance, user_id = await job_polling.resolve_test_job_target(
+            ctx, get_unity_instance_from_context, remote_hosted=config.http_remote_hosted, deadline=deadline,
+        )
+    except asyncio.TimeoutError as exc:
+        return MCPResponse(**job_polling.observation_timeout(job_id, last_error={
+            "success": False, "error": type(exc).__name__, "message": "Unity instance resolution timed out.",
+        }))
 
     params: dict[str, Any] = {"job_id": job_id}
     if include_failed_tests:
@@ -457,49 +492,31 @@ async def get_test_job(
             "get_test_job",
             params,
         )
-        return response, observation_order
+        return job_polling.normalize_response(response), observation_order
 
-    # If wait_timeout is specified, poll server-side until complete or timeout
-    if wait_timeout and wait_timeout > 0:
-        deadline = asyncio.get_event_loop().time() + wait_timeout
-        poll_interval = 2.0  # Poll Unity every 2 seconds
-
-        while True:
-            response, observation_order = await _fetch_status()
-
-            if not isinstance(response, dict):
-                return MCPResponse(success=False, error=str(response))
-
-            if not response.get("success", True):
-                return MCPResponse(**response)
-
-            # Check if tests are done
-            data = response.get("data", {})
-            status = data.get("status", "")
+    if deadline is not None:
+        async def observe(data, observation_order):
             await _update_job_nudge(
                 unity_instance, user_id, job_id, data, wait=True, observation_order=observation_order,
             )
-            if status in ("succeeded", "failed", "cancelled"):
-                return GetTestJobResponse(**response)
 
-            # Check timeout
-            remaining = deadline - asyncio.get_event_loop().time()
-            if remaining <= 0:
-                # Timeout reached, return current status
-                return GetTestJobResponse(**response)
+        response = await job_polling.poll_test_job(_fetch_status, observe, job_id=job_id, deadline=deadline)
+        if response.get("success") is True:
+            return GetTestJobResponse(**project_test_job(
+                response, result_offset=result_offset, detail_offset=detail_offset,
+            ))
+        return MCPResponse(**response)
 
-            # Wait before next poll (but don't exceed remaining time)
-            await asyncio.sleep(min(poll_interval, remaining))
-    
     # No wait_timeout - return immediately (original behavior)
     response, observation_order = await _fetch_status()
-    if not isinstance(response, dict):
-        return MCPResponse(success=False, error=str(response))
-    if not response.get("success", True):
-        return MCPResponse(**response)
+    failure = job_polling.validate_job_response(response, job_id)
+    if failure is not None:
+        return MCPResponse(**failure)
 
     data = response.get("data", {})
     await _update_job_nudge(
         unity_instance, user_id, job_id, data, wait=False, observation_order=observation_order,
     )
-    return GetTestJobResponse(**response)
+    return GetTestJobResponse(**project_test_job(
+        response, result_offset=result_offset, detail_offset=detail_offset,
+    ))

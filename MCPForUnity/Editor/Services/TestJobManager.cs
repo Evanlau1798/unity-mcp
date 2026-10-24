@@ -10,47 +10,15 @@ using UnityEditor.TestTools.TestRunner.Api;
 
 namespace MCPForUnity.Editor.Services
 {
-    internal enum TestJobStatus
-    {
-        Running,
-        Succeeded,
-        Failed
-    }
-
-    internal sealed class TestJobFailure
-    {
-        public string FullName { get; set; }
-        public string Message { get; set; }
-    }
-
-    internal sealed class TestJob
-    {
-        public string JobId { get; set; }
-        public TestJobStatus Status { get; set; }
-        public string Mode { get; set; }
-        public long StartedUnixMs { get; set; }
-        public long? FinishedUnixMs { get; set; }
-        public long LastUpdateUnixMs { get; set; }
-        public int? TotalTests { get; set; }
-        public int CompletedTests { get; set; }
-        public string CurrentTestFullName { get; set; }
-        public long? CurrentTestStartedUnixMs { get; set; }
-        public string LastFinishedTestFullName { get; set; }
-        public long? LastFinishedUnixMs { get; set; }
-        public List<TestJobFailure> FailuresSoFar { get; set; }
-        public string Error { get; set; }
-        public TestRunResult Result { get; set; }
-        public long InitTimeoutMs { get; set; }
-    }
-
     /// <summary>
     /// Tracks async test jobs started via MCP tools. This is not intended to capture manual Test Runner UI runs.
     /// </summary>
     [InitializeOnLoad]
-    internal static class TestJobManager
+    internal static partial class TestJobManager
     {
         // Keep this small to avoid ballooning payloads during polling.
         private const int FailureCap = 25;
+        internal const string InitializationTimeoutError = "Test job failed to initialize (tests did not start within timeout)";
         private const long StuckThresholdMs = 60_000;
         private const long DefaultInitializationTimeoutMs = 15_000; // 15 seconds default; override per-job via run_tests init_timeout param
         private const long MaxInitializationTimeoutMs = 600_000; // 10 minutes hard cap
@@ -87,7 +55,7 @@ namespace MCPForUnity.Editor.Services
             lock (LockObj)
             {
                 if (string.IsNullOrEmpty(_currentJobId) ||
-                    !Jobs.TryGetValue(_currentJobId, out job) || job.Status != TestJobStatus.Running)
+                    !Jobs.TryGetValue(_currentJobId, out job))
                 {
                     return;
                 }
@@ -99,7 +67,8 @@ namespace MCPForUnity.Editor.Services
                 // Re-register callbacks now, before the Test Runner resumes after reload.
                 if (MCPServiceLocator.Tests is TestRunnerService service)
                 {
-                    service.ResumeJobAfterReload(job.JobId, job.Mode);
+                    service.ResumeJobAfterReload(job.JobId, job.Mode, job.UnityRunId,
+                        job.InitializationTimedOut, job.NativeRunStarted, job.NativeCleanupPending, job.Result, job.Error);
                 }
             }
             catch (Exception ex)
@@ -125,215 +94,16 @@ namespace MCPForUnity.Editor.Services
         }
 
         /// <summary>
-        /// Force-clears any stuck or orphaned test job. Call this when tests get stuck due to
-        /// assembly reloads or other interruptions.
+        /// Clear an owned job only after its native GUID is confirmed inactive.
+        /// A tracker reset is never a substitute for cancellation or native cleanup.
         /// </summary>
-        /// <returns>True if a job was cleared, false if no running job exists.</returns>
         public static bool ClearStuckJob()
         {
-            bool cleared = false;
-            lock (LockObj)
-            {
-                if (string.IsNullOrEmpty(_currentJobId))
-                {
-                    return false;
-                }
-
-                if (Jobs.TryGetValue(_currentJobId, out var job) && job.Status == TestJobStatus.Running)
-                {
-                    long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                    job.Status = TestJobStatus.Failed;
-                    job.Error = "Job cleared manually (stuck or orphaned)";
-                    job.FinishedUnixMs = now;
-                    job.LastUpdateUnixMs = now;
-                    McpLog.Warn($"[TestJobManager] Manually cleared stuck job {_currentJobId}");
-                    cleared = true;
-                }
-
-                _currentJobId = null;
-            }
-            PersistToSessionState(force: true);
-            return cleared;
-        }
-
-        private sealed class PersistedState
-        {
-            public string current_job_id { get; set; }
-            public List<PersistedJob> jobs { get; set; }
-        }
-
-        private sealed class PersistedJob
-        {
-            public string job_id { get; set; }
-            public string status { get; set; }
-            public string mode { get; set; }
-            public long started_unix_ms { get; set; }
-            public long? finished_unix_ms { get; set; }
-            public long last_update_unix_ms { get; set; }
-            public int? total_tests { get; set; }
-            public int completed_tests { get; set; }
-            public string current_test_full_name { get; set; }
-            public long? current_test_started_unix_ms { get; set; }
-            public string last_finished_test_full_name { get; set; }
-            public long? last_finished_unix_ms { get; set; }
-            public List<TestJobFailure> failures_so_far { get; set; }
-            public string error { get; set; }
-            public long init_timeout_ms { get; set; }
-        }
-
-        private static TestJobStatus ParseStatus(string status)
-        {
-            if (string.IsNullOrWhiteSpace(status))
-            {
-                return TestJobStatus.Running;
-            }
-
-            string s = status.Trim().ToLowerInvariant();
-            return s switch
-            {
-                "succeeded" => TestJobStatus.Succeeded,
-                "failed" => TestJobStatus.Failed,
-                _ => TestJobStatus.Running
-            };
-        }
-
-        private static void TryRestoreFromSessionState()
-        {
-            try
-            {
-                string json = SessionState.GetString(SessionKeyJobs, string.Empty);
-                if (string.IsNullOrWhiteSpace(json))
-                {
-                    var legacy = SessionState.GetString(SessionKeyCurrentJobId, string.Empty);
-                    _currentJobId = string.IsNullOrWhiteSpace(legacy) ? null : legacy;
-                    return;
-                }
-
-                var state = JsonConvert.DeserializeObject<PersistedState>(json);
-                if (state?.jobs == null)
-                {
-                    return;
-                }
-
-                lock (LockObj)
-                {
-                    Jobs.Clear();
-                    foreach (var pj in state.jobs)
-                    {
-                        if (pj == null || string.IsNullOrWhiteSpace(pj.job_id))
-                        {
-                            continue;
-                        }
-
-                        Jobs[pj.job_id] = new TestJob
-                        {
-                            JobId = pj.job_id,
-                            Status = ParseStatus(pj.status),
-                            Mode = pj.mode,
-                            StartedUnixMs = pj.started_unix_ms,
-                            FinishedUnixMs = pj.finished_unix_ms,
-                            LastUpdateUnixMs = pj.last_update_unix_ms,
-                            TotalTests = pj.total_tests,
-                            CompletedTests = pj.completed_tests,
-                            CurrentTestFullName = pj.current_test_full_name,
-                            CurrentTestStartedUnixMs = pj.current_test_started_unix_ms,
-                            LastFinishedTestFullName = pj.last_finished_test_full_name,
-                            LastFinishedUnixMs = pj.last_finished_unix_ms,
-                            FailuresSoFar = pj.failures_so_far ?? new List<TestJobFailure>(),
-                            Error = pj.error,
-                            InitTimeoutMs = pj.init_timeout_ms,
-                            // Intentionally not persisted to avoid ballooning SessionState.
-                            Result = null
-                        };
-                    }
-
-                    _currentJobId = string.IsNullOrWhiteSpace(state.current_job_id) ? null : state.current_job_id;
-                    if (!string.IsNullOrEmpty(_currentJobId) && !Jobs.ContainsKey(_currentJobId))
-                    {
-                        _currentJobId = null;
-                    }
-
-                    // Detect and clean up stale "running" jobs that were orphaned by domain reload.
-                    // After a domain reload, TestRunStatus resets to not-running, but _currentJobId
-                    // may still be set. If the job hasn't been updated recently, it's likely orphaned.
-                    if (!string.IsNullOrEmpty(_currentJobId) && Jobs.TryGetValue(_currentJobId, out var currentJob))
-                    {
-                        if (currentJob.Status == TestJobStatus.Running)
-                        {
-                            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                            long staleCutoffMs = 5 * 60 * 1000; // 5 minutes
-                            if (now - currentJob.LastUpdateUnixMs > staleCutoffMs)
-                            {
-                                McpLog.Warn($"[TestJobManager] Clearing stale job {_currentJobId} (last update {(now - currentJob.LastUpdateUnixMs) / 1000}s ago)");
-                                currentJob.Status = TestJobStatus.Failed;
-                                currentJob.Error = "Job orphaned after domain reload";
-                                currentJob.FinishedUnixMs = now;
-                                _currentJobId = null;
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                // Restoration is best-effort; never block editor load.
-                McpLog.Warn($"[TestJobManager] Failed to restore SessionState: {ex.Message}");
-            }
-        }
-
-        private static void PersistToSessionState(bool force = false)
-        {
-            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            
-            // Throttle non-critical updates to reduce overhead during large test runs
-            if (!force && (now - _lastPersistUnixMs) < MinPersistIntervalMs)
-            {
-                return;
-            }
-            
-            try
-            {
-                PersistedState snapshot;
-                lock (LockObj)
-                {
-                    var jobs = Jobs.Values
-                        .OrderByDescending(j => j.LastUpdateUnixMs)
-                        .Take(MaxJobsToKeep)
-                        .Select(j => new PersistedJob
-                        {
-                            job_id = j.JobId,
-                            status = j.Status.ToString().ToLowerInvariant(),
-                            mode = j.Mode,
-                            started_unix_ms = j.StartedUnixMs,
-                            finished_unix_ms = j.FinishedUnixMs,
-                            last_update_unix_ms = j.LastUpdateUnixMs,
-                            total_tests = j.TotalTests,
-                            completed_tests = j.CompletedTests,
-                            current_test_full_name = j.CurrentTestFullName,
-                            current_test_started_unix_ms = j.CurrentTestStartedUnixMs,
-                            last_finished_test_full_name = j.LastFinishedTestFullName,
-                            last_finished_unix_ms = j.LastFinishedUnixMs,
-                            failures_so_far = (j.FailuresSoFar ?? new List<TestJobFailure>()).Take(FailureCap).ToList(),
-                            error = j.Error,
-                            init_timeout_ms = j.InitTimeoutMs
-                        })
-                        .ToList();
-
-                    snapshot = new PersistedState
-                    {
-                        current_job_id = _currentJobId,
-                        jobs = jobs
-                    };
-                }
-
-                SessionState.SetString(SessionKeyCurrentJobId, snapshot.current_job_id ?? string.Empty);
-                SessionState.SetString(SessionKeyJobs, JsonConvert.SerializeObject(snapshot));
-                _lastPersistUnixMs = now;
-            }
-            catch (Exception ex)
-            {
-                McpLog.Warn($"[TestJobManager] Failed to persist SessionState: {ex.Message}");
-            }
+            string jobId = CurrentJobId;
+            if (string.IsNullOrEmpty(jobId)) return false;
+            RestoreRunningJobCallbacks();
+            return MCPServiceLocator.Tests is TestRunnerService service
+                && service.TryClearCompletedNativeRun(jobId);
         }
 
         public static string StartJob(TestMode mode, TestFilterOptions filterOptions = null, long initTimeoutMs = 0)
@@ -342,37 +112,40 @@ namespace MCPForUnity.Editor.Services
             if (initTimeoutMs < 0) initTimeoutMs = 0;
             if (initTimeoutMs > MaxInitializationTimeoutMs) initTimeoutMs = MaxInitializationTimeoutMs;
 
-            string jobId = Guid.NewGuid().ToString("N");
-            long started = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            string modeStr = mode.ToString();
-
-            var job = new TestJob
-            {
-                JobId = jobId,
-                Status = TestJobStatus.Running,
-                Mode = modeStr,
-                StartedUnixMs = started,
-                FinishedUnixMs = null,
-                LastUpdateUnixMs = started,
-                TotalTests = null,
-                CompletedTests = 0,
-                CurrentTestFullName = null,
-                CurrentTestStartedUnixMs = null,
-                LastFinishedTestFullName = null,
-                LastFinishedUnixMs = null,
-                FailuresSoFar = new List<TestJobFailure>(),
-                Error = null,
-                Result = null,
-                InitTimeoutMs = initTimeoutMs
-            };
-
-            // Single lock scope for check-and-set to avoid TOCTOU race
+            string jobId;
+            // Check preconditions before allocating a job, while preserving ownership priority.
             lock (LockObj)
             {
                 if (!string.IsNullOrEmpty(_currentJobId))
-                {
                     throw new InvalidOperationException("A Unity test run is already in progress.");
-                }
+                if (RefreshOperationTracker.IsInProgress)
+                    throw new InvalidOperationException("A Unity refresh is still in progress; query its operation before starting tests.");
+                TestRunnerService.ValidateScenesBeforeTestRun();
+
+                jobId = Guid.NewGuid().ToString("N");
+                long started = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                string modeStr = mode.ToString();
+
+                var job = new TestJob
+                {
+                    JobId = jobId,
+                    Status = TestJobStatus.Running,
+                    Mode = modeStr,
+                    StartedUnixMs = started,
+                    FinishedUnixMs = null,
+                    LastUpdateUnixMs = started,
+                    TotalTests = null,
+                    CompletedTests = 0,
+                    CurrentTestFullName = null,
+                    CurrentTestStartedUnixMs = null,
+                    LastFinishedTestFullName = null,
+                    LastFinishedUnixMs = null,
+                    FailuresSoFar = new List<TestJobFailure>(),
+                    Error = null,
+                    Result = null,
+                    InitTimeoutMs = initTimeoutMs
+                };
+
                 Jobs[jobId] = job;
                 _currentJobId = jobId;
             }
@@ -401,7 +174,17 @@ namespace MCPForUnity.Editor.Services
             return jobId;
         }
 
-        public static void FinalizeCurrentJobFromRunFinished(TestRunResult resultPayload)
+        internal static void OnRunScheduled(string jobId, string unityRunId)
+        {
+            lock (LockObj)
+            {
+                if (string.IsNullOrEmpty(jobId) || _currentJobId != jobId || !Jobs.TryGetValue(jobId, out var job)) return;
+                job.UnityRunId = unityRunId;
+            }
+            PersistToSessionState(force: true);
+        }
+
+        public static void FinalizeCurrentJobFromRunFinished(TestRunResult resultPayload, bool keepOwnership = false)
         {
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             lock (LockObj)
@@ -413,10 +196,11 @@ namespace MCPForUnity.Editor.Services
 
                 job.LastUpdateUnixMs = now;
                 job.FinishedUnixMs = now;
-                job.Status = resultPayload != null && resultPayload.Failed > 0
+                job.Status = job.InitializationTimedOut || (resultPayload != null && resultPayload.Failed > 0)
                     ? TestJobStatus.Failed
                     : TestJobStatus.Succeeded;
-                job.Error = null;
+                job.Error = job.InitializationTimedOut ? InitializationTimeoutError : null;
+                job.NativeCleanupPending = keepOwnership;
                 job.Result = resultPayload;
                 if (resultPayload != null)
                 {
@@ -425,12 +209,12 @@ namespace MCPForUnity.Editor.Services
                 }
                 job.CurrentTestFullName = null;
                 job.CurrentTestStartedUnixMs = null;
-                _currentJobId = null;
+                if (!keepOwnership) _currentJobId = null;
             }
             PersistToSessionState(force: true);
         }
 
-        internal static void FinalizeCurrentJobFromRunError(string message)
+        internal static void FinalizeCurrentJobFromRunError(string message, bool keepOwnership = false)
         {
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             lock (LockObj)
@@ -440,12 +224,17 @@ namespace MCPForUnity.Editor.Services
                     return;
                 }
                 job.Status = TestJobStatus.Failed;
-                job.Error = message;
+                // A message that already carries the timeout text (for example one that also says how to
+                // clear an unconfirmed native cleanup) is kept; any other error is reported as the timeout.
+                job.Error = job.InitializationTimedOut
+                    && (message == null || message.IndexOf(InitializationTimeoutError, StringComparison.Ordinal) < 0)
+                    ? InitializationTimeoutError : message;
+                job.NativeCleanupPending = keepOwnership;
                 job.LastUpdateUnixMs = now;
                 job.FinishedUnixMs = now;
                 job.CurrentTestFullName = null;
                 job.CurrentTestStartedUnixMs = null;
-                _currentJobId = null;
+                if (!keepOwnership) _currentJobId = null;
             }
             PersistToSessionState(force: true);
         }
@@ -460,6 +249,7 @@ namespace MCPForUnity.Editor.Services
                     return;
                 }
 
+                job.NativeRunStarted = true;
                 job.LastUpdateUnixMs = now;
                 job.TotalTests = totalTests;
                 job.CompletedTests = 0;
@@ -483,7 +273,7 @@ namespace MCPForUnity.Editor.Services
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             lock (LockObj)
             {
-                if (string.IsNullOrEmpty(_currentJobId) || !Jobs.TryGetValue(_currentJobId, out var job))
+                if (string.IsNullOrEmpty(_currentJobId) || !Jobs.TryGetValue(_currentJobId, out var job) || job.Status != TestJobStatus.Running)
                 {
                     return;
                 }
@@ -500,7 +290,7 @@ namespace MCPForUnity.Editor.Services
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             lock (LockObj)
             {
-                if (string.IsNullOrEmpty(_currentJobId) || !Jobs.TryGetValue(_currentJobId, out var job))
+                if (string.IsNullOrEmpty(_currentJobId) || !Jobs.TryGetValue(_currentJobId, out var job) || job.Status != TestJobStatus.Running)
                 {
                     return;
                 }
@@ -551,6 +341,7 @@ namespace MCPForUnity.Editor.Services
 
             TestJob jobToReturn = null;
             bool shouldPersist = false;
+            bool cancelRun = false;
             lock (LockObj)
             {
                 if (!Jobs.TryGetValue(jobId, out var job))
@@ -561,7 +352,7 @@ namespace MCPForUnity.Editor.Services
                 // Check if job is stuck in "running" state without having called OnRunStarted (TotalTests still null).
                 // This happens when tests fail to initialize (e.g., unsaved scene, compilation issues).
                 // After 15 seconds without initialization, auto-fail the job to prevent hanging.
-                if (job.Status == TestJobStatus.Running && job.TotalTests == null)
+                if (job.Status == TestJobStatus.Running && !job.NativeRunStarted && job.TotalTests == null)
                 {
                     long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     long initTimeout = job.InitTimeoutMs > 0 ? job.InitTimeoutMs : DefaultInitializationTimeoutMs;
@@ -569,16 +360,16 @@ namespace MCPForUnity.Editor.Services
                     {
                         McpLog.Warn($"[TestJobManager] Job {jobId} failed to initialize within {initTimeout}ms, auto-failing");
                         job.Status = TestJobStatus.Failed;
-                        job.Error = "Test job failed to initialize (tests did not start within timeout)";
+                        job.Error = InitializationTimeoutError;
                         job.FinishedUnixMs = now;
                         job.LastUpdateUnixMs = now;
                         if (_currentJobId == jobId)
                         {
-                            _currentJobId = null;
-                            // Keep TestRunStatus in sync: when initialization times out, neither
-                            // RunStarted nor RunFinished fires, so the running flag would otherwise leak.
-                            // Only clear it if this job is still the active one — a newer job may have taken over.
-                            TestRunStatus.MarkFinished();
+                            cancelRun = true;
+                            job.InitializationTimedOut = true;
+                            job.NativeCleanupPending = true;
+                            // A scheduled Unity run still owns its callbacks and operation lock.
+                            // Reject a new job until cancellation has finished cleaning up.
                         }
                         shouldPersist = true;
                     }
@@ -587,6 +378,10 @@ namespace MCPForUnity.Editor.Services
                 jobToReturn = job;
             }
 
+            if (cancelRun && MCPServiceLocator.Tests is TestRunnerService service)
+            {
+                service.CancelForInitializationTimeout(jobId);
+            }
             if (shouldPersist)
             {
                 PersistToSessionState(force: true);
@@ -594,156 +389,43 @@ namespace MCPForUnity.Editor.Services
             return jobToReturn;
         }
 
-        internal static object ToSerializable(TestJob job, bool includeDetails, bool includeFailedTests)
-        {
-            if (job == null)
-            {
-                return null;
-            }
-
-            object resultPayload = null;
-            if (job.Status != TestJobStatus.Running && job.Result != null)
-            {
-                resultPayload = job.Result.ToSerializable(job.Mode, includeDetails, includeFailedTests);
-            }
-
-            return new
-            {
-                job_id = job.JobId,
-                status = job.Status.ToString().ToLowerInvariant(),
-                mode = job.Mode,
-                started_unix_ms = job.StartedUnixMs,
-                finished_unix_ms = job.FinishedUnixMs,
-                last_update_unix_ms = job.LastUpdateUnixMs,
-                progress = new
-                {
-                    completed = job.CompletedTests,
-                    total = job.TotalTests,
-                    current_test_full_name = job.CurrentTestFullName,
-                    current_test_started_unix_ms = job.CurrentTestStartedUnixMs,
-                    last_finished_test_full_name = job.LastFinishedTestFullName,
-                    last_finished_unix_ms = job.LastFinishedUnixMs,
-                    stuck_suspected = IsStuck(job),
-                    editor_is_focused = InternalEditorUtility.isApplicationActive,
-                    run_in_background = UnityEngine.Application.runInBackground,
-                    blocked_reason = GetBlockedReason(job),
-                    failures_so_far = BuildFailuresPayload(job.FailuresSoFar),
-                    failures_capped = (job.FailuresSoFar != null && job.FailuresSoFar.Count >= FailureCap)
-                },
-                error = job.Error,
-                result = resultPayload
-            };
-        }
-
-        private static string GetBlockedReason(TestJob job)
-        {
-            if (job == null || job.Status != TestJobStatus.Running)
-            {
-                return null;
-            }
-
-            if (!IsStuck(job))
-            {
-                return null;
-            }
-
-            // This matches the real-world symptom you observed: background Unity can get heavily throttled by OS/Editor.
-            if (!InternalEditorUtility.isApplicationActive)
-            {
-                return "editor_unfocused";
-            }
-
-            if (EditorStateCache.GetActualIsCompiling())
-            {
-                return "compiling";
-            }
-
-            if (EditorApplication.isUpdating)
-            {
-                return "asset_import";
-            }
-
-            return "unknown";
-        }
-
-        private static bool IsStuck(TestJob job)
-        {
-            if (job == null || job.Status != TestJobStatus.Running)
-            {
-                return false;
-            }
-
-            if (string.IsNullOrWhiteSpace(job.CurrentTestFullName) || !job.CurrentTestStartedUnixMs.HasValue)
-            {
-                return false;
-            }
-
-            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            return (now - job.CurrentTestStartedUnixMs.Value) > StuckThresholdMs;
-        }
-
-        private static object[] BuildFailuresPayload(List<TestJobFailure> failures)
-        {
-            if (failures == null || failures.Count == 0)
-            {
-                return Array.Empty<object>();
-            }
-
-            var list = new object[failures.Count];
-            for (int i = 0; i < failures.Count; i++)
-            {
-                var f = failures[i];
-                list[i] = new { full_name = f?.FullName, message = f?.Message };
-            }
-            return list;
-        }
-
         private static void FinalizeFromTask(string jobId, Task<TestRunResult> task)
         {
+            bool ownsCurrent;
             lock (LockObj)
             {
-                if (!Jobs.TryGetValue(jobId, out var existing))
-                {
-                    if (_currentJobId == jobId) _currentJobId = null;
-                    return;
-                }
+                if (!Jobs.TryGetValue(jobId, out var existing) || existing.Status != TestJobStatus.Running) return;
+                ownsCurrent = _currentJobId == jobId;
+            }
 
-                // If RunFinished already finalized the job, do nothing.
-                if (existing.Status != TestJobStatus.Running)
-                {
-                    if (_currentJobId == jobId) _currentJobId = null;
-                    return;
-                }
+            TestRunResult result = null;
+            Exception error = null;
+            if (task.IsFaulted) error = task.Exception?.GetBaseException()
+                ?? new InvalidOperationException("Unknown test job failure");
+            else if (task.IsCanceled) error = new InvalidOperationException("Test job canceled");
+            else result = task.Result;
 
+            if (ownsCurrent)
+            {
+                // A Task outcome says nothing about native teardown. Reuse the same
+                // per-GUID completion monitor as callbacks; unknown identity stays owned.
+                RestoreRunningJobCallbacks();
+                if (MCPServiceLocator.Tests is TestRunnerService service
+                    && service.TryCompleteFromTask(jobId, result, error)) return;
+            }
+
+            lock (LockObj)
+            {
+                if (!Jobs.TryGetValue(jobId, out var existing) || existing.Status != TestJobStatus.Running) return;
                 existing.LastUpdateUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 existing.FinishedUnixMs = existing.LastUpdateUnixMs;
-
-                if (task.IsFaulted)
-                {
-                    existing.Status = TestJobStatus.Failed;
-                    existing.Error = task.Exception?.GetBaseException()?.Message ?? "Unknown test job failure";
-                    existing.Result = null;
-                }
-                else if (task.IsCanceled)
-                {
-                    existing.Status = TestJobStatus.Failed;
-                    existing.Error = "Test job canceled";
-                    existing.Result = null;
-                }
-                else
-                {
-                    var result = task.Result;
-                    existing.Status = result != null && result.Failed > 0
-                        ? TestJobStatus.Failed
-                        : TestJobStatus.Succeeded;
-                    existing.Error = null;
-                    existing.Result = result;
-                }
-
-                if (_currentJobId == jobId)
-                {
-                    _currentJobId = null;
-                }
+                existing.Status = error != null || (result != null && result.Failed > 0)
+                    ? TestJobStatus.Failed : TestJobStatus.Succeeded;
+                existing.Error = error?.Message;
+                existing.Result = result;
+                // If callback restoration was unavailable, persist the cleanup hold.
+                // A historical task may update its result but cannot release a newer job.
+                if (_currentJobId == jobId) existing.NativeCleanupPending = true;
             }
             PersistToSessionState(force: true);
         }

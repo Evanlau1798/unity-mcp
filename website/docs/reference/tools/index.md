@@ -12,9 +12,10 @@ description: Auto-generated catalog of every MCP for Unity tool, grouped by doma
 
 Every tool MCP for Unity exposes, generated directly from the Python `@mcp_for_unity_tool` registry under `Server/src/services/tools/`.
 
-## `animation` &nbsp; (1 tool)
-Animator control & AnimationClip creation
+## `animation` &nbsp; (2 tools)
+Animator control, AnimationClip creation & 2D sprite-sheet animation
 - **[`manage_animation`](./animation/manage_animation.md)** — Manage Unity animation: Animator control and AnimationClip creation.
+- **[`manage_sprite`](./animation/manage_sprite.md)** — Slice 2D sprite sheets and build AnimationClips and an AnimatorController from the frames.
 
 ## `asset_gen` &nbsp; (6 tools)
 AI asset generation – 3D model gen/import, 2D image gen & audio gen (bring-your-own-key)
@@ -53,7 +54,7 @@ Essential scene, script, asset & editor tools (always on by default)
 - **[`manage_script_capabilities`](./core/manage_script_capabilities.md)** — Get manage_script capabilities (supported ops, limits, and guards).
 - **[`manage_tools`](./core/manage_tools.md)** — Manage which tool groups are visible in this session.
 - **[`read_console`](./core/read_console.md)** — Gets messages from or clears the Unity Editor console.
-- **[`refresh_unity`](./core/refresh_unity.md)** — Request a Unity asset database refresh and optionally a script compilation.
+- **[`refresh_unity`](./core/refresh_unity.md)** — Request a tracked Unity refresh and optionally compilation.
 - **[`script_apply_edits`](./core/script_apply_edits.md)** — Structured C# edits (methods/classes) with safer boundaries - prefer this over raw text.
 - **[`set_active_instance`](./core/set_active_instance.md)** — Set the active Unity instance for this client/session.
 - **[`validate_script`](./core/validate_script.md)** — Validate a C# script and return diagnostics.

@@ -14,13 +14,13 @@ namespace MCPForUnity.Editor.Services
 {
     /// <summary>
     /// Automatically sets the editor to "No Throttling" mode during test runs.
-    /// 
+    ///
     /// This helps prevent background stalls for normal tests. However, tests that trigger
     /// script compilation mid-run may still stall because:
     /// - Internal Unity coroutine waits rely on editor ticks
     /// - OS-level throttling affects the main thread when Unity is backgrounded
     /// - No amount of internal nudging can overcome OS thread scheduling
-    /// 
+    ///
     /// The MCP workflow is unaffected because socket messages provide external stimulus
     /// that wakes Unity's main thread.
     /// </summary>
@@ -75,8 +75,8 @@ namespace MCPForUnity.Editor.Services
 
         /// <summary>
         /// Apply no-throttling preemptively before tests start.
-        /// Call this before Execute() for PlayMode tests to ensure Unity isn't throttled
-        /// during the Play mode transition (before RunStarted fires).
+        /// Call this before Execute() for both modes so native setup can advance
+        /// before RunStarted fires, including when the Editor is unfocused.
         /// </summary>
         public static void ApplyNoThrottlingPreemptive()
         {
@@ -101,7 +101,7 @@ namespace MCPForUnity.Editor.Services
             McpLog.Info("[TestRunnerNoThrottle] Applied No Throttling for test run.");
         }
 
-        private static void RestoreThrottling()
+        internal static void RestoreThrottling()
         {
             if (!AreSettingsCaptured()) return;
 
@@ -140,13 +140,14 @@ namespace MCPForUnity.Editor.Services
 
             public void RunFinished(ITestResultAdaptor result)
             {
-                RestoreThrottling();
+                // The MCP service restores after native cleanup, which follows this callback.
+                if (!TestJobManager.HasRunningJob) RestoreThrottling();
             }
 
             public void OnError(string message)
             {
-                // Build/prebuild failures may terminate before RunFinished is delivered.
-                RestoreThrottling();
+                // Build/prebuild failures can also precede native cleanup.
+                if (!TestJobManager.HasRunningJob) RestoreThrottling();
             }
 
             public void TestStarted(ITestAdaptor test) { }

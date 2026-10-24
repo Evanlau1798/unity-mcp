@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from typing import Any
+from typing import Any, Literal
 
 from models import MCPResponse
 
@@ -22,6 +22,38 @@ def _busy(reason: str, retry_after_ms: int) -> MCPResponse:
         hint="retry",
         data={"reason": reason, "retry_after_ms": int(retry_after_ms)},
     )
+
+
+def _refresh_scope(assets: dict[str, Any]) -> tuple[Literal["assets", "scripts", "all"], Literal["none", "request"]]:
+    """Select the minimal safe refresh from a complete generation snapshot.
+
+    Incomplete, absent, or inconsistent scanner data retains the previous
+    conservative full-refresh behavior. Project/Package settings changes are
+    already classified into both generations by the external scanner.
+    """
+    if assets.get("external_changes_scan_complete") is not True:
+        return "all", "request"
+    observed = assets.get("external_changes_generations")
+    acknowledged = assets.get("external_changes_acknowledged_generations")
+    if not isinstance(observed, dict) or not isinstance(acknowledged, dict):
+        return "all", "request"
+    try:
+        scopes = []
+        for scope in ("assets", "scripts"):
+            seen = observed[scope]
+            ack = acknowledged[scope]
+            if (type(seen) is not int or type(ack) is not int
+                    or seen < 0 or ack < 0 or ack > seen):
+                return "all", "request"
+            if seen > ack:
+                scopes.append(scope)
+    except (KeyError, TypeError):
+        return "all", "request"
+    if scopes == ["assets"]:
+        return "assets", "none"
+    if scopes == ["scripts"]:
+        return "scripts", "request"
+    return "all", "request"
 
 
 async def preflight(
@@ -49,27 +81,122 @@ async def preflight(
         state = state_resp.model_dump() if hasattr(
             state_resp, "model_dump") else state_resp
     except Exception:
-        # If we cannot determine readiness, fall back to proceeding (tools already contain retry logic).
-        return None
+        return _busy("editor_state_unconfirmed", 500)
 
-    if not isinstance(state, dict) or not state.get("success", False):
-        # Unknown state; proceed rather than blocking (avoids false positives when Unity is reachable but status isn't).
-        return None
+    if not isinstance(state, dict) or state.get("success") is not True:
+        return _busy("editor_state_unconfirmed", 500)
 
     data = state.get("data")
-    if not isinstance(data, dict):
-        return None
+    if not isinstance(data, dict) or (data.get("staleness") or {}).get("is_stale") is True:
+        return _busy("editor_state_unconfirmed", 500)
 
-    # Optional refresh-if-dirty
+    # Check the native owner before a refresh, which is itself a mutation.
+    if requires_no_tests and (data.get("tests") or {}).get("is_running") is True:
+        return _busy("tests_running", 5000)
+
+    # A refresh acceptance is not completion. Preserve failures and operation
+    # identity, then obtain a new snapshot instead of reusing pre-refresh state.
+    refreshed = False
+    assets = data.get("assets") or {}
+    # A refresh that is already underway must be reattached to its original
+    # receipt even when the external-dirty bit is currently false. The
+    # refresh tracker handles this as a query, never as a second mutation.
+    refreshing = (assets.get("refresh") or {}).get("is_refresh_in_progress") is True
+    if refreshing and not refresh_if_dirty:
+        return _busy("refresh_pending", 500)
     if refresh_if_dirty:
-        assets = data.get("assets")
-        if isinstance(assets, dict) and assets.get("external_changes_dirty") is True:
+        if assets.get("external_changes_dirty") is True or refreshing:
+            scope, compile_mode = _refresh_scope(assets)
             try:
                 from services.tools.refresh_unity import refresh_unity
-                await refresh_unity(ctx, mode="if_dirty", scope="all", compile="request", wait_for_ready=True)
+                response = await refresh_unity(
+                    ctx, mode="if_dirty", scope=scope, compile=compile_mode, wait_for_ready=True,
+                )
+                payload = response.model_dump() if hasattr(response, "model_dump") else response
             except Exception:
-                # Best-effort only; fall through to normal tool dispatch.
-                pass
+                return _busy("refresh_unconfirmed", 500)
+            if not isinstance(payload, dict) or "success" not in payload:
+                return _busy("refresh_unconfirmed", 500)
+            if payload["success"] is not True:
+                return MCPResponse(**payload)
+            receipt = payload.get("data")
+            if not isinstance(receipt, dict) or receipt.get("completed") is not True:
+                blocked = _busy("refresh_pending", 500)
+                blocked.data["refresh"] = payload
+                return blocked
+
+            try:
+                state_resp = await get_editor_state(ctx)
+                state = state_resp.model_dump() if hasattr(state_resp, "model_dump") else state_resp
+                if not isinstance(state, dict) or state.get("success") is not True:
+                    return _busy("editor_state_unconfirmed", 500)
+                data = state.get("data")
+                if not isinstance(data, dict) or (data.get("staleness") or {}).get("is_stale") is True:
+                    return _busy("editor_state_unconfirmed", 500)
+            except Exception:
+                return _busy("editor_state_unconfirmed", 500)
+            refreshed = True
+            after_assets = data.get("assets") or {}
+            if (after_assets.get("refresh") or {}).get("is_refresh_in_progress") is True:
+                return _busy("refresh_pending", 500)
+            if after_assets.get("external_changes_dirty") is True:
+                # A completed script refresh can legitimately leave a *new*
+                # assets generation dirty. Catch up exactly once, with no
+                # compilation, before rejecting a requested new test. A script
+                # edit, incomplete scan, unACKed first refresh or changing
+                # editor state must still fail closed. No unbounded retry loop.
+                compilation = data.get("compilation") or {}
+                safe_catchup = (
+                    requires_no_tests
+                    and receipt.get("status") == "succeeded"
+                    and receipt.get("dirty_snapshot_acknowledged") is True
+                    and _refresh_scope(after_assets) == ("assets", "none")
+                    and after_assets.get("is_updating") is not True
+                    and compilation.get("is_compiling") is not True
+                    and compilation.get("is_domain_reload_pending") is not True
+                    and (data.get("tests") or {}).get("is_running") is not True
+                )
+                if not safe_catchup:
+                    return _busy("external_changes_pending", 500)
+                try:
+                    catchup = await refresh_unity(
+                        ctx, mode="if_dirty", scope="assets", compile="none",
+                        wait_for_ready=True,
+                    )
+                    receipt2 = catchup.model_dump() if isinstance(catchup, MCPResponse) else catchup
+                except Exception:
+                    return _busy("refresh_unconfirmed", 500)
+                if not isinstance(receipt2, dict):
+                    return _busy("refresh_unconfirmed", 500)
+                if receipt2.get("success") is not True:
+                    return MCPResponse(**receipt2)
+                catchup_data = receipt2.get("data")
+                if not isinstance(catchup_data, dict) or catchup_data.get("completed") is not True:
+                    return MCPResponse(
+                        success=False, error="busy", message="refresh_pending", hint="retry",
+                        data={"reason": "refresh_pending", "retry_after_ms": 500, "refresh": receipt2},
+                    )
+                if (catchup_data.get("status") != "succeeded"
+                        or catchup_data.get("dirty_snapshot_acknowledged") is not True):
+                    return _busy("external_changes_pending", 500)
+                try:
+                    next_state = await get_editor_state(ctx)
+                    next_state = next_state.model_dump() if hasattr(next_state, "model_dump") else next_state
+                except Exception:
+                    return _busy("editor_state_unconfirmed", 500)
+                if not isinstance(next_state, dict) or next_state.get("success") is not True:
+                    return _busy("editor_state_unconfirmed", 500)
+                data = next_state.get("data")
+                if not isinstance(data, dict) or (data.get("staleness") or {}).get("is_stale") is True:
+                    return _busy("editor_state_unconfirmed", 500)
+                assets_now = data.get("assets") or {}
+                if (assets_now.get("refresh") or {}).get("is_refresh_in_progress") is True:
+                    return _busy("refresh_pending", 500)
+                if assets_now.get("external_changes_dirty") is True:
+                    return _busy("external_changes_pending", 500)
+
+    if (data.get("assets") or {}).get("is_updating") is True:
+        return _busy("asset_import", 500)
 
     # Tests running: fail fast for tools that require exclusivity.
     if requires_no_tests:
@@ -99,12 +226,21 @@ async def preflight(
                 state_resp = await get_editor_state(ctx)
                 state = state_resp.model_dump() if hasattr(
                     state_resp, "model_dump") else state_resp
-                data = state.get("data") if isinstance(state, dict) else None
+                data = state.get("data") if isinstance(state, dict) and state.get("success") is True else None
                 if not isinstance(data, dict):
-                    return None
+                    return _busy("editor_state_unconfirmed", 500)
+                if (data.get("staleness") or {}).get("is_stale") is True:
+                    return _busy("editor_state_unconfirmed", 500)
+                assets = data.get("assets") or {}
+                if (assets.get("refresh") or {}).get("is_refresh_in_progress") is True:
+                    return _busy("refresh_pending", 500)
+                if assets.get("is_updating") is True:
+                    return _busy("asset_import", 500)
+                if requires_no_tests and (data.get("tests") or {}).get("is_running") is True:
+                    return _busy("tests_running", 5000)
+                if refreshed and (data.get("assets") or {}).get("external_changes_dirty") is True:
+                    return _busy("external_changes_pending", 500)
             except Exception:
-                return None
+                return _busy("editor_state_unconfirmed", 500)
 
-    # Staleness: if the snapshot is stale, proceed (tools will still run), but callers that read resources can back off.
-    # In future we may make this strict for some tools.
     return None

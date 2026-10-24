@@ -13,17 +13,25 @@ from mcp.types import ToolAnnotations
 from models import MCPResponse
 from services.registry import mcp_for_unity_tool
 from services.tools import get_unity_instance_from_context
+from services.tools.preflight import preflight
 import transport.unity_transport as unity_transport
 import transport.legacy.unity_connection as _legacy_conn
-from transport.legacy.unity_connection import _extract_response_reason
+
 from services.state.external_changes_scanner import external_changes_scanner
 import services.resources.editor_state as editor_state
 
 logger = logging.getLogger(__name__)
 
+from services.state.refresh_tracking import RefreshAttempt, pending, run_tracked_refresh
+
+_REFRESH_WAIT_SECONDS = 60.0
+_REFRESH_POLL_SECONDS = 0.5
+_refresh_attempts: dict[str, RefreshAttempt] = {}
+_refresh_locks: dict[str, asyncio.Lock] = {}
+
 # Blocking reasons that indicate Unity is actually busy (not just stale status).
 # Must match activityPhase values from EditorStateCache.cs
-_REAL_BLOCKING_REASONS = {"compiling", "domain_reload", "running_tests", "asset_import"}
+_REAL_BLOCKING_REASONS = {"compiling", "domain_reload", "running_tests", "asset_import", "asset_refresh"}
 
 
 def _in_pytest() -> bool:
@@ -100,7 +108,7 @@ async def send_mutation(
     """Send a non-idempotent mutation with reload recovery.
 
     Handles the full retry/recovery pattern for script mutations:
-    1. Send with retry_on_reload=False (don't re-send if Unity is reloading)
+    1. Guard readiness without refreshing, then send with retry_on_reload=False
     2. If reloading rejection (command never executed) → wait + retry once
     3. If connection lost after send → wait + verify via callback
     4. Wait for editor readiness before returning
@@ -110,6 +118,10 @@ async def send_mutation(
             dict if the mutation was verified after connection loss, or None to
             keep the original error response.
     """
+    gate = await preflight(ctx, wait_for_no_compile=True, refresh_if_dirty=False)
+    if gate is not None:
+        return gate.model_dump()
+
     resp = await unity_transport.send_with_unity_instance(
         _legacy_conn.async_send_command_with_retry,
         unity_instance,
@@ -118,7 +130,9 @@ async def send_mutation(
         retry_on_reload=False,
     )
     if is_reloading_rejection(resp):
-        await wait_for_editor_ready(ctx)
+        ready, _elapsed = await wait_for_editor_ready(ctx)
+        if not ready:
+            return resp
         resp = await unity_transport.send_with_unity_instance(
             _legacy_conn.async_send_command_with_retry,
             unity_instance,
@@ -166,7 +180,7 @@ async def verify_edit_by_sha(
 
 
 @mcp_for_unity_tool(
-    description="Request a Unity asset database refresh and optionally a script compilation. Can optionally wait for readiness.",
+    description="Request a tracked Unity refresh and optionally compilation. Completion requires a matching native receipt; recover with the same operation_id.",
     annotations=ToolAnnotations(
         title="Refresh Unity",
         destructiveHint=True,
@@ -180,94 +194,42 @@ async def refresh_unity(
     compile: Annotated[Literal["none", "request"],
                        "Whether to request compilation"] = "none",
     wait_for_ready: Annotated[bool,
-                              "If true, wait until mcpforunity://editor/state reports data.advice.ready_for_tools true"] = True,
+                              "Wait for this refresh operation; timeout keeps operation_id for recovery."] = True,
+    operation_id: Annotated[str | None, "Query an existing refresh operation without starting another."] = None,
 ) -> MCPResponse | dict[str, Any]:
+    deadline = time.monotonic() + _REFRESH_WAIT_SECONDS
     unity_instance = await get_unity_instance_from_context(ctx)
+    instance = unity_instance or await editor_state.infer_single_instance_id(ctx)
+    if not instance:
+        return MCPResponse(success=False, error="unity_instance_unresolved")
 
-    params: dict[str, Any] = {
-        "mode": mode,
-        "scope": scope,
-        "compile": compile,
-        "wait_for_ready": bool(wait_for_ready),
-    }
+    lock = _refresh_locks.setdefault(instance, asyncio.Lock())
+    if lock.locked():
+        return pending(_refresh_attempts.get(instance), error="refresh_observation_in_progress")
 
-    recovered_from_disconnect = False
-    # Don't retry on reload - refresh_unity triggers compilation/reload,
-    # so retrying would cause multiple reloads (issue #577)
-    response = await unity_transport.send_with_unity_instance(
-        _legacy_conn.async_send_command_with_retry,
-        unity_instance,
-        "refresh_unity",
-        params,
-        retry_on_reload=False,
-    )
+    async with lock:
+        # Populate the scanner's project root using the canonical resource.
+        # Failure does not fabricate a clean baseline; capture remains unknown.
+        try:
+            await asyncio.wait_for(
+                editor_state.get_editor_state(ctx), timeout=max(0.0, deadline - time.monotonic()),
+            )
+        except asyncio.TimeoutError:
+            return pending(_refresh_attempts.get(instance), error="refresh_observation_timeout")
+        except (ConnectionError, OSError):
+            pass
+        snapshot = external_changes_scanner.capture(instance, scope)
 
-    # Handle connection errors during refresh/compile gracefully.
-    # Unity disconnects during domain reload, which is expected behavior - not a failure.
-    # If we sent the command and connection closed, the refresh was likely triggered successfully.
-    # Convert MCPResponse to dict if needed
-    response_dict = response if isinstance(response, dict) else (response.model_dump() if hasattr(response, "model_dump") else response.__dict__)
-    if not response_dict.get("success", True):
-        hint = response_dict.get("hint")
-        err = (response_dict.get("error") or response_dict.get("message") or "").lower()
-        reason = _extract_response_reason(response_dict)
-
-        # Connection closed/timeout during compile = refresh was triggered, Unity is reloading
-        # This is SUCCESS, not failure - don't return error to prevent Claude Code from retrying
-        is_connection_lost = (
-            "connection closed" in err
-            or "disconnected" in err
-            or "aborted" in err  # WinError 10053: connection aborted
-            or "timeout" in err
-            or reason == "reloading"
-        )
-
-        if is_connection_lost and compile == "request":
-            # EXPECTED BEHAVIOR: When compile="request", Unity triggers domain reload which
-            # causes connection to close mid-command. This is NOT a failure - the refresh
-            # was successfully triggered. Treating this as success prevents Claude Code from
-            # retrying unnecessarily (which would cause multiple domain reloads - issue #577).
-            # The subsequent wait_for_ready loop (below) will verify Unity becomes ready.
-            logger.info("refresh_unity: Connection lost during compile (expected - domain reload triggered)")
-            recovered_from_disconnect = True
-        elif hint == "retry" or "could not connect" in err:
-            # Retryable error - proceed to wait loop if wait_for_ready
-            if not wait_for_ready:
-                return MCPResponse(**response_dict)
-            recovered_from_disconnect = True
-        else:
-            # Non-recoverable error - connection issue unrelated to domain reload
-            logger.warning(f"refresh_unity: Non-recoverable error (compile={compile}): {err[:100]}")
-            return MCPResponse(**response_dict)
-
-    # Optional server-side wait loop (defensive): if Unity tool doesn't wait or returns quickly,
-    # poll the canonical editor_state resource until ready or timeout.
-    ready_confirmed = False
-    if wait_for_ready:
-        ready_confirmed, _ = await wait_for_editor_ready(ctx, timeout_s=60.0)
-
-        # If we timed out without confirming readiness, log and return failure
-        if not ready_confirmed:
-            logger.warning("refresh_unity: Timed out after 60s waiting for editor to become ready")
-            return MCPResponse(
-                success=False,
-                message="Refresh triggered but timed out after 60s waiting for editor readiness.",
-                data={"timeout": True, "wait_seconds": 60.0},
+        async def send(params):
+            return await unity_transport.send_with_unity_instance(
+                _legacy_conn.async_send_command_with_retry, unity_instance,
+                "refresh_unity", params, retry_on_reload=False,
             )
 
-    # After readiness is restored, clear any external-dirty flag for this instance so future tools can proceed cleanly.
-    try:
-        inst = unity_instance or await editor_state.infer_single_instance_id(ctx)
-        if inst:
-            external_changes_scanner.clear_dirty(inst)
-    except Exception:
-        pass
-
-    if recovered_from_disconnect:
-        return MCPResponse(
-            success=True,
-            message="Refresh recovered after Unity disconnect/retry; editor is ready.",
-            data={"recovered_from_disconnect": True},
+        return await run_tracked_refresh(
+            instance=instance, snapshot=snapshot, scanner=external_changes_scanner,
+            attempts=_refresh_attempts, send=send,
+            params={"mode": mode, "scope": scope, "compile": compile},
+            wait_for_ready=wait_for_ready, timeout_s=max(0.0, deadline - time.monotonic()),
+            poll_s=_REFRESH_POLL_SECONDS, operation_id=operation_id,
         )
-
-    return MCPResponse(**response_dict) if isinstance(response, dict) else response

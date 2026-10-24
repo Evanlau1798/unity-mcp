@@ -16,7 +16,7 @@ namespace MCPForUnity.Editor.Services
     /// Updated on the main thread via Editor callbacks and periodic update ticks.
     /// </summary>
     [InitializeOnLoad]
-    internal static class EditorStateCache
+    internal static partial class EditorStateCache
     {
         private static readonly object LockObj = new();
         private static long _sequence;
@@ -57,213 +57,10 @@ namespace MCPForUnity.Editor.Services
         private static bool _lastTrackedIsPaused;
         private static bool _lastTrackedIsUpdating;
         private static bool _lastTrackedTestsRunning;
+        private static string _lastTrackedCurrentJobId;
         private static string _lastTrackedActivityPhase;
 
         private static JObject _cached;
-
-        private sealed class EditorStateSnapshot
-        {
-            [JsonProperty("schema_version")]
-            public string SchemaVersion { get; set; }
-
-            [JsonProperty("observed_at_unix_ms")]
-            public long ObservedAtUnixMs { get; set; }
-
-            [JsonProperty("sequence")]
-            public long Sequence { get; set; }
-
-            [JsonProperty("unity")]
-            public EditorStateUnity Unity { get; set; }
-
-            [JsonProperty("editor")]
-            public EditorStateEditor Editor { get; set; }
-
-            [JsonProperty("activity")]
-            public EditorStateActivity Activity { get; set; }
-
-            [JsonProperty("compilation")]
-            public EditorStateCompilation Compilation { get; set; }
-
-            [JsonProperty("assets")]
-            public EditorStateAssets Assets { get; set; }
-
-            [JsonProperty("tests")]
-            public EditorStateTests Tests { get; set; }
-
-            [JsonProperty("transport")]
-            public EditorStateTransport Transport { get; set; }
-
-            [JsonProperty("settings")]
-            public EditorStateSettings Settings { get; set; }
-        }
-
-        private sealed class EditorStateUnity
-        {
-            [JsonProperty("instance_id")]
-            public string InstanceId { get; set; }
-
-            [JsonProperty("unity_version")]
-            public string UnityVersion { get; set; }
-
-            [JsonProperty("project_id")]
-            public string ProjectId { get; set; }
-
-            [JsonProperty("platform")]
-            public string Platform { get; set; }
-
-            [JsonProperty("is_batch_mode")]
-            public bool? IsBatchMode { get; set; }
-        }
-
-        private sealed class EditorStateEditor
-        {
-            [JsonProperty("is_focused")]
-            public bool? IsFocused { get; set; }
-
-            [JsonProperty("play_mode")]
-            public EditorStatePlayMode PlayMode { get; set; }
-
-            [JsonProperty("active_scene")]
-            public EditorStateActiveScene ActiveScene { get; set; }
-        }
-
-        private sealed class EditorStatePlayMode
-        {
-            [JsonProperty("is_playing")]
-            public bool? IsPlaying { get; set; }
-
-            [JsonProperty("is_paused")]
-            public bool? IsPaused { get; set; }
-
-            [JsonProperty("is_changing")]
-            public bool? IsChanging { get; set; }
-        }
-
-        private sealed class EditorStateActiveScene
-        {
-            [JsonProperty("path")]
-            public string Path { get; set; }
-
-            [JsonProperty("guid")]
-            public string Guid { get; set; }
-
-            [JsonProperty("name")]
-            public string Name { get; set; }
-        }
-
-        private sealed class EditorStateActivity
-        {
-            [JsonProperty("phase")]
-            public string Phase { get; set; }
-
-            [JsonProperty("since_unix_ms")]
-            public long SinceUnixMs { get; set; }
-
-            [JsonProperty("reasons")]
-            public string[] Reasons { get; set; }
-        }
-
-        private sealed class EditorStateCompilation
-        {
-            [JsonProperty("is_compiling")]
-            public bool? IsCompiling { get; set; }
-
-            [JsonProperty("is_domain_reload_pending")]
-            public bool? IsDomainReloadPending { get; set; }
-
-            [JsonProperty("last_compile_started_unix_ms")]
-            public long? LastCompileStartedUnixMs { get; set; }
-
-            [JsonProperty("last_compile_finished_unix_ms")]
-            public long? LastCompileFinishedUnixMs { get; set; }
-
-            [JsonProperty("last_domain_reload_before_unix_ms")]
-            public long? LastDomainReloadBeforeUnixMs { get; set; }
-
-            [JsonProperty("last_domain_reload_after_unix_ms")]
-            public long? LastDomainReloadAfterUnixMs { get; set; }
-        }
-
-        private sealed class EditorStateAssets
-        {
-            [JsonProperty("is_updating")]
-            public bool? IsUpdating { get; set; }
-
-            [JsonProperty("external_changes_dirty")]
-            public bool? ExternalChangesDirty { get; set; }
-
-            [JsonProperty("external_changes_last_seen_unix_ms")]
-            public long? ExternalChangesLastSeenUnixMs { get; set; }
-
-            [JsonProperty("external_changes_dirty_since_unix_ms")]
-            public long? ExternalChangesDirtySinceUnixMs { get; set; }
-
-            [JsonProperty("external_changes_last_cleared_unix_ms")]
-            public long? ExternalChangesLastClearedUnixMs { get; set; }
-
-            [JsonProperty("refresh")]
-            public EditorStateRefresh Refresh { get; set; }
-        }
-
-        private sealed class EditorStateRefresh
-        {
-            [JsonProperty("is_refresh_in_progress")]
-            public bool? IsRefreshInProgress { get; set; }
-
-            [JsonProperty("last_refresh_requested_unix_ms")]
-            public long? LastRefreshRequestedUnixMs { get; set; }
-
-            [JsonProperty("last_refresh_finished_unix_ms")]
-            public long? LastRefreshFinishedUnixMs { get; set; }
-        }
-
-        private sealed class EditorStateTests
-        {
-            [JsonProperty("is_running")]
-            public bool? IsRunning { get; set; }
-
-            [JsonProperty("mode")]
-            public string Mode { get; set; }
-
-            [JsonProperty("current_job_id")]
-            public string CurrentJobId { get; set; }
-
-            [JsonProperty("started_unix_ms")]
-            public long? StartedUnixMs { get; set; }
-
-            [JsonProperty("started_by")]
-            public string StartedBy { get; set; }
-
-            [JsonProperty("last_run")]
-            public EditorStateLastRun LastRun { get; set; }
-        }
-
-        private sealed class EditorStateLastRun
-        {
-            [JsonProperty("finished_unix_ms")]
-            public long? FinishedUnixMs { get; set; }
-
-            [JsonProperty("result")]
-            public string Result { get; set; }
-
-            [JsonProperty("counts")]
-            public object Counts { get; set; }
-        }
-
-        private sealed class EditorStateTransport
-        {
-            [JsonProperty("unity_bridge_connected")]
-            public bool? UnityBridgeConnected { get; set; }
-
-            [JsonProperty("last_message_unix_ms")]
-            public long? LastMessageUnixMs { get; set; }
-        }
-
-        private sealed class EditorStateSettings
-        {
-            [JsonProperty("batch_execute_max_commands")]
-            public int BatchExecuteMaxCommands { get; set; }
-        }
 
         static EditorStateCache()
         {
@@ -317,7 +114,9 @@ namespace MCPForUnity.Editor.Services
             }
         }
 
-        private static void OnUpdate()
+        private static void OnUpdate() => UpdateSnapshot(forceObservation: false);
+
+        private static void UpdateSnapshot(bool forceObservation)
         {
             // Throttle to reduce overhead while keeping the snapshot fresh enough for polling clients.
             double now = EditorApplication.timeSinceStartup;
@@ -327,7 +126,7 @@ namespace MCPForUnity.Editor.Services
             // Check for compilation edge transitions (always update on these)
             bool compilationEdge = isCompiling != _lastIsCompiling;
 
-            if (!compilationEdge && now - _lastUpdateTimeSinceStartup < MinUpdateIntervalSeconds)
+            if (!forceObservation && !compilationEdge && now - _lastUpdateTimeSinceStartup < MinUpdateIntervalSeconds)
             {
                 return;
             }
@@ -342,31 +141,12 @@ namespace MCPForUnity.Editor.Services
             bool isPlaying = EditorApplication.isPlaying;
             bool isPaused = EditorApplication.isPaused;
             bool isUpdating = EditorApplication.isUpdating;
-            bool testsRunning = TestRunStatus.IsRunning;
+            bool testsRunning = TestRunStatus.IsRunning || TestJobManager.HasRunningJob;
+            string currentJobId = TestJobManager.CurrentJobId;
 
-            var activityPhase = "idle";
-            if (testsRunning)
-            {
-                activityPhase = "running_tests";
-            }
-            else if (isCompiling)
-            {
-                activityPhase = "compiling";
-            }
-            else if (_domainReloadPending)
-            {
-                activityPhase = "domain_reload";
-            }
-            else if (isUpdating)
-            {
-                activityPhase = "asset_import";
-            }
-            else if (EditorApplication.isPlayingOrWillChangePlaymode)
-            {
-                activityPhase = "playmode_transition";
-            }
+            var activityPhase = GetActivityPhase(testsRunning, isCompiling, isUpdating);
 
-            bool hasChanges = compilationEdge
+            bool hasChanges = _cached == null || compilationEdge
                 || _lastTrackedScenePath != scenePath
                 || _lastTrackedSceneName != sceneName
                 || _lastTrackedIsFocused != isFocused
@@ -374,12 +154,19 @@ namespace MCPForUnity.Editor.Services
                 || _lastTrackedIsPaused != isPaused
                 || _lastTrackedIsUpdating != isUpdating
                 || _lastTrackedTestsRunning != testsRunning
+                || _lastTrackedCurrentJobId != currentJobId
                 || _lastTrackedActivityPhase != activityPhase;
 
+            _lastUpdateTimeSinceStartup = now;
             if (!hasChanges)
             {
-                // No state change - skip the expensive BuildSnapshot entirely.
-                // This is the key optimization that prevents the 28ms GC spikes.
+                // These cheap live reads are a new observation even when unchanged.
+                // Renew the heartbeat without rebuilding the scene GUID or JSON model.
+                lock (LockObj)
+                {
+                    _observedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    _cached["observed_at_unix_ms"] = _observedUnixMs;
+                }
                 return;
             }
 
@@ -391,10 +178,10 @@ namespace MCPForUnity.Editor.Services
             _lastTrackedIsPaused = isPaused;
             _lastTrackedIsUpdating = isUpdating;
             _lastTrackedTestsRunning = testsRunning;
+            _lastTrackedCurrentJobId = currentJobId;
             _lastTrackedActivityPhase = activityPhase;
 
-            _lastUpdateTimeSinceStartup = now;
-            ForceUpdate("tick");
+            ForceUpdate(forceObservation ? "read" : "tick");
         }
 
         private static void ForceUpdate(string reason)
@@ -417,32 +204,12 @@ namespace MCPForUnity.Editor.Services
             string scenePath = string.IsNullOrEmpty(scene.path) ? null : scene.path;
             string sceneGuid = !string.IsNullOrEmpty(scenePath) ? AssetDatabase.AssetPathToGUID(scenePath) : null;
 
-            bool testsRunning = TestRunStatus.IsRunning;
+            bool testsRunning = TestRunStatus.IsRunning || TestJobManager.HasRunningJob;
             var testsMode = TestRunStatus.Mode?.ToString();
             string currentJobId = TestJobManager.CurrentJobId;
             bool isFocused = InternalEditorUtility.isApplicationActive;
 
-            var activityPhase = "idle";
-            if (testsRunning)
-            {
-                activityPhase = "running_tests";
-            }
-            else if (isCompiling)
-            {
-                activityPhase = "compiling";
-            }
-            else if (_domainReloadPending)
-            {
-                activityPhase = "domain_reload";
-            }
-            else if (EditorApplication.isUpdating)
-            {
-                activityPhase = "asset_import";
-            }
-            else if (EditorApplication.isPlayingOrWillChangePlaymode)
-            {
-                activityPhase = "playmode_transition";
-            }
+            var activityPhase = GetActivityPhase(testsRunning, isCompiling, EditorApplication.isUpdating);
 
             var snapshot = new EditorStateSnapshot
             {
@@ -495,12 +262,7 @@ namespace MCPForUnity.Editor.Services
                     ExternalChangesLastSeenUnixMs = null,
                     ExternalChangesDirtySinceUnixMs = null,
                     ExternalChangesLastClearedUnixMs = null,
-                    Refresh = new EditorStateRefresh
-                    {
-                        IsRefreshInProgress = false,
-                        LastRefreshRequestedUnixMs = null,
-                        LastRefreshFinishedUnixMs = null
-                    }
+                    Refresh = RefreshOperationTracker.GetRefreshSnapshot().ToObject<EditorStateRefresh>()
                 },
                 Tests = new EditorStateTests
                 {
@@ -532,8 +294,20 @@ namespace MCPForUnity.Editor.Services
             return JObject.FromObject(snapshot);
         }
 
+        private static string GetActivityPhase(bool testsRunning, bool isCompiling, bool isUpdating)
+        {
+            if (testsRunning) return "running_tests";
+            if (isCompiling) return "compiling";
+            if (_domainReloadPending) return "domain_reload";
+            if (isUpdating) return "asset_import";
+            if (EditorApplication.isPlayingOrWillChangePlaymode) return "playmode_transition";
+            return "idle";
+        }
+
         public static JObject GetSnapshot()
         {
+            // A synchronous read must observe current signals even within the tick throttle.
+            UpdateSnapshot(forceObservation: true);
             lock (LockObj)
             {
                 // Defensive: if something went wrong early, rebuild once.
@@ -547,14 +321,25 @@ namespace MCPForUnity.Editor.Services
                 // which prevents unnecessary _cached rebuilds, not from caching the clone.
                 var clone = (JObject)_cached.DeepClone();
 
-                // When Unity is backgrounded, OnUpdate is throttled and the
-                // cached timestamp grows stale even though the data is current.
-                // Re-stamp only in that case so the server-side staleness check
-                // still fires for genuinely unresponsive editors when focused.
-                if (!InternalEditorUtility.isApplicationActive)
+                // Ownership can change before the next cache tick, including an orphan
+                // restored without a known mode. It must never appear ready in that gap.
+                string currentJobId = TestJobManager.CurrentJobId;
+                bool testsRunning = TestRunStatus.IsRunning || !string.IsNullOrEmpty(currentJobId);
+                if (clone["tests"] is JObject tests)
                 {
-                    clone["observed_at_unix_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    tests["is_running"] = testsRunning;
+                    tests["current_job_id"] = currentJobId == null ? JValue.CreateNull() : new JValue(currentJobId);
+                    string testsMode = TestRunStatus.Mode?.ToString();
+                    tests["mode"] = testsMode == null ? JValue.CreateNull() : new JValue(testsMode);
                 }
+                if (clone["activity"] is JObject activity
+                    && (testsRunning || activity.Value<string>("phase") == "running_tests"))
+                    activity["phase"] = GetActivityPhase(testsRunning, GetActualIsCompiling(), EditorApplication.isUpdating);
+
+                // Receipt changes are independent of the cached editor signals.
+                // Expose pending refresh immediately, even before compilation starts.
+                if (clone["assets"] is JObject assets)
+                    assets["refresh"] = RefreshOperationTracker.GetRefreshSnapshot();
 
                 return clone;
             }
@@ -610,5 +395,3 @@ namespace MCPForUnity.Editor.Services
         }
     }
 }
-
-

@@ -25,7 +25,7 @@ cd Server && uv run pytest tests/test_manage_material.py -v
 cd Server && uv run pytest tests/ -k "test_create_material" -v
 ```
 
-CI workflow: `.github/workflows/python-tests.yml`. Coverage is uploaded to Codecov on every run.
+CI workflow: `.github/workflows/python-tests.yml`. It runs the tests on Python 3.10 and 3.14; coverage is uploaded to Codecov from the 3.10 job.
 
 ### Adding a Python test
 
@@ -63,6 +63,14 @@ Key flags:
 Exit-code contract: `0` all blocking legs passed, `1` a blocking-leg regression, `2` bridge unreachable / setup failure, `3` project does not compile, `4` no Unity license / Hub seat, `5` Editor binary/version not found.
 
 It needs a Hub-activated Editor locally (no ULF/serial); none of the CI license staging applies.
+
+### Refresh and test-job lifecycle regressions
+
+Use the isolated test project for lifecycle changes. The focused native fixtures are `RefreshOperationTrackerTests`, `RefreshUnityTests`, `TestJobManagerLifecycleTests` and `TestRunnerServiceNativeQueryRetryTests`; the Python contract tests cover operation receipts, preflight, dirty generations and the total test-job observation deadline. Establish a behavioral failing assertion before applying the corresponding repair; a compile or dependency error does not demonstrate the regression.
+
+After those tests pass, use the resident bridge from the canonical harness to check an assets-only refresh, an implicit C# compilation, an explicit compilation and same-ID recovery across domain reload. Verify loaded assets or assembly markers as well as the receipt. Then run one targeted EditMode and one PlayMode job and observe both the result and native cleanup release. Do not infer completion merely from idle state, elapsed time, a Task finishing or a terminal job status.
+
+The Unity Test Framework API differs by installed version. On 1.1.33, per-run activity is obtained from the native run holder because newer per-GUID API methods are unavailable. An unavailable or failed native query means unknown ownership, not inactivity. Initialization timeout must not turn a late successful callback into a successful job or unlock a run whose scene restoration is still pending.
 
 ### Adding a Unity test
 

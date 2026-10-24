@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using MCPForUnity.Editor.Helpers;
+using Newtonsoft.Json;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEditor.TestTools.TestRunner.Api;
@@ -14,141 +16,10 @@ using UnityEngine.SceneManagement;
 namespace MCPForUnity.Editor.Services
 {
     /// <summary>
-    /// Restores <see cref="EditorSettings.enterPlayModeOptionsEnabled"/> and
-    /// <see cref="EditorSettings.enterPlayModeOptions"/> if a previous test run was interrupted
-    /// (e.g. by domain reload or editor crash) before <see cref="TestRunnerService"/> could restore them.
-    /// Two persistence layers:
-    /// <list type="bullet">
-    /// <item><see cref="SessionState"/> — survives domain reloads within the same editor session.</item>
-    /// <item>A marker file in <c>Library/</c> — survives editor crashes and force quits.</item>
-    /// </list>
-    /// </summary>
-    [InitializeOnLoad]
-    internal static class PlayModeOptionsGuard
-    {
-        private const string KeyPending = "MCPForUnity.PlayModeOptions.PendingRestore";
-        private const string KeyEnabled = "MCPForUnity.PlayModeOptions.OriginalEnabled";
-        private const string KeyOptions = "MCPForUnity.PlayModeOptions.OriginalOptions";
-
-        // Library/ is project-local and gitignored by default.
-        private static readonly string MarkerPath = Path.Combine("Library", "MCPPlayModeOptionsBackup.txt");
-
-        static PlayModeOptionsGuard()
-        {
-            RestoreIfIdle();
-        }
-
-        internal static void RestoreIfIdle()
-        {
-            // After domain reload or editor restart: if a restore is pending and no test run
-            // is active, restore now. TryLoad checks SessionState first, then the marker file.
-            if (TryLoad(out _, out _) && !TestRunStatus.IsRunning && !TestJobManager.HasRunningJob)
-            {
-                Restore();
-            }
-        }
-
-        internal static bool IsPending => TryLoad(out _, out _);
-
-        internal static void Save(bool originalEnabled, EnterPlayModeOptions originalOptions)
-        {
-            // SessionState (domain reload)
-            SessionState.SetBool(KeyEnabled, originalEnabled);
-            SessionState.SetInt(KeyOptions, (int)originalOptions);
-            SessionState.SetBool(KeyPending, true);
-
-            // Marker file (crash recovery). Two lines: enabled flag, then options int.
-            try
-            {
-                File.WriteAllText(MarkerPath, $"{(originalEnabled ? 1 : 0)}\n{(int)originalOptions}");
-            }
-            catch (Exception ex)
-            {
-                McpLog.Warn($"[PlayModeOptionsGuard] Failed to write marker file: {ex.Message}");
-            }
-        }
-
-        internal static void Restore()
-        {
-            if (!TryLoad(out bool origEnabled, out EnterPlayModeOptions origOptions))
-            {
-                return;
-            }
-
-            EditorSettings.enterPlayModeOptions = origOptions;
-            EditorSettings.enterPlayModeOptionsEnabled = origEnabled;
-            Clear();
-            McpLog.Info("[PlayModeOptionsGuard] Restored enterPlayModeOptions after interrupted test run.");
-        }
-
-        internal static void Clear()
-        {
-            SessionState.SetBool(KeyPending, false);
-            try
-            {
-                if (File.Exists(MarkerPath))
-                {
-                    File.Delete(MarkerPath);
-                }
-            }
-            catch
-            {
-                // Best-effort cleanup.
-            }
-        }
-
-        /// <summary>
-        /// Checks SessionState first (available after domain reload), then falls back to the
-        /// marker file (available after editor crash/restart).
-        /// </summary>
-        private static bool TryLoad(out bool originalEnabled, out EnterPlayModeOptions originalOptions)
-        {
-            // Fast path: SessionState is available after domain reload.
-            if (SessionState.GetBool(KeyPending, false))
-            {
-                originalEnabled = SessionState.GetBool(KeyEnabled, false);
-                originalOptions = (EnterPlayModeOptions)SessionState.GetInt(KeyOptions, 0);
-                return true;
-            }
-
-            // Slow path: marker file survives editor crash/restart.
-            originalEnabled = false;
-            originalOptions = EnterPlayModeOptions.None;
-            try
-            {
-                if (!File.Exists(MarkerPath))
-                {
-                    return false;
-                }
-
-                string[] lines = File.ReadAllLines(MarkerPath);
-                if (lines.Length < 2)
-                {
-                    return false;
-                }
-
-                if (!int.TryParse(lines[0].Trim(), out int enabledInt) ||
-                    !int.TryParse(lines[1].Trim(), out int optionsInt))
-                {
-                    return false;
-                }
-
-                originalEnabled = enabledInt != 0;
-                originalOptions = (EnterPlayModeOptions)optionsInt;
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-    }
-
-    /// <summary>
     /// Concrete implementation of <see cref="ITestRunnerService"/>.
     /// Coordinates Unity Test Runner operations and produces structured results.
     /// </summary>
-    internal sealed class TestRunnerService : ITestRunnerService, IErrorCallbacks, IDisposable
+    internal sealed partial class TestRunnerService : ITestRunnerService, IErrorCallbacks, IDisposable
     {
         private static readonly TestMode[] AllModes = { TestMode.EditMode, TestMode.PlayMode };
 
@@ -157,27 +28,11 @@ namespace MCPForUnity.Editor.Services
         private readonly List<ITestResultAdaptor> _leafResults = new List<ITestResultAdaptor>();
         private TaskCompletionSource<TestRunResult> _runCompletionSource;
         private string _trackedJobId;
-
         public TestRunnerService()
         {
             _testRunnerApi = ScriptableObject.CreateInstance<TestRunnerApi>();
             _testRunnerApi.hideFlags = HideFlags.HideAndDontSave;
             _testRunnerApi.RegisterCallbacks(this);
-        }
-
-        internal void ResumeJobAfterReload(string jobId, string mode)
-        {
-            if (_runCompletionSource != null || _trackedJobId != null ||
-                string.IsNullOrEmpty(jobId) || TestJobManager.CurrentJobId != jobId)
-            {
-                return;
-            }
-
-            _trackedJobId = jobId;
-            if (Enum.TryParse<TestMode>(mode, out var testMode))
-            {
-                TestRunStatus.MarkStarted(testMode);
-            }
         }
 
         private bool IsTrackingCurrentJob =>
@@ -220,8 +75,11 @@ namespace MCPForUnity.Editor.Services
             }
 
             await _operationLock.WaitAsync().ConfigureAwait(true);
-            Task<TestRunResult> runTask;
+            Task<TestRunResult> runTask = null;
+            string ownerJobId = TestJobManager.CurrentJobId;
+            bool dispatchStarted = false;
             bool adjustedPlayModeOptions = false;
+            bool appliedNoThrottling = false;
             bool originalEnterPlayModeOptionsEnabled = false;
             EnterPlayModeOptions originalEnterPlayModeOptions = EnterPlayModeOptions.None;
             try
@@ -252,7 +110,9 @@ namespace MCPForUnity.Editor.Services
 
                 _leafResults.Clear();
                 _trackedJobId = TestJobManager.CurrentJobId;
+                _nativeQueryFailedSince = null;
                 _runCompletionSource = new TaskCompletionSource<TestRunResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+                runTask = _runCompletionSource.Task;
                 // Mark running immediately so readiness snapshots reflect the busy state even before callbacks fire.
                 TestRunStatus.MarkStarted(mode);
 
@@ -270,32 +130,46 @@ namespace MCPForUnity.Editor.Services
                 // (Issue #525: EditMode tests were blocked by save dialog)
                 SaveDirtyScenesIfNeeded();
 
-                // Apply no-throttling preemptively for PlayMode tests. This ensures Unity
-                // isn't throttled during the Play mode transition (which requires multiple
-                // editor frames). Without this, unfocused Unity may never reach RunStarted
-                // where throttling would normally be disabled.
-                if (mode == TestMode.PlayMode)
-                {
-                    TestRunnerNoThrottle.ApplyNoThrottlingPreemptive();
-                }
+                // EditMode setup also advances over editor frames before RunStarted.
+                // Disable background throttling before Execute for both test modes.
+                appliedNoThrottling = true;
+                TestRunnerNoThrottle.ApplyNoThrottlingPreemptive();
 
-                _testRunnerApi.Execute(settings);
-
-                runTask = _runCompletionSource.Task;
+                // Unity's overloaded null check also rejects a destroyed API object.
+                // Once Execute is entered, an exception may follow native side effects.
+                if (_testRunnerApi == null)
+                    throw new InvalidOperationException("Unity Test Runner API is unavailable before native dispatch.");
+                dispatchStarted = true;
+                _unityRunId = _testRunnerApi.Execute(settings);
+                TestJobManager.OnRunScheduled(_trackedJobId, _unityRunId);
             }
-            catch
+            catch (Exception ex)
             {
-                _trackedJobId = null;
-                _runCompletionSource = null;
-                // Ensure the status is cleared if we failed to start the run.
-                TestRunStatus.MarkFinished();
-                if (adjustedPlayModeOptions)
+                if (dispatchStarted && _trackedJobId != null)
                 {
-                    RestoreEnterPlayModeOptions(originalEnterPlayModeOptionsEnabled, originalEnterPlayModeOptions);
+                    // Execute may have scheduled native work before throwing. Keep the
+                    // task, operation lock and settings until its cleanup is confirmed.
+                    CompleteRun(null, ex);
                 }
+                else
+                {
+                    // This path never entered Execute, so there is no native side effect
+                    // to await. Finalize only the original owner, then restore settings.
+                    if (ownerJobId != null && TestJobManager.CurrentJobId == ownerJobId)
+                        TestJobManager.FinalizeCurrentJobFromRunError(ex.Message);
+                    _trackedJobId = null;
+                    _unityRunId = null;
+                    _runCompletionSource = null;
+                    if (appliedNoThrottling) TestRunnerNoThrottle.RestoreThrottling();
+                    TestRunStatus.MarkFinished();
+                    if (adjustedPlayModeOptions)
+                    {
+                        RestoreEnterPlayModeOptions(originalEnterPlayModeOptionsEnabled, originalEnterPlayModeOptions);
+                    }
 
-                _operationLock.Release();
-                throw;
+                    _operationLock.Release();
+                    throw;
+                }
             }
 
             try
@@ -315,6 +189,8 @@ namespace MCPForUnity.Editor.Services
 
         public void Dispose()
         {
+            EditorApplication.update -= CompleteRunWhenIdle;
+            _nativeQueryFailedSince = null;
             try
             {
                 _testRunnerApi?.UnregisterCallbacks(this);
@@ -331,162 +207,6 @@ namespace MCPForUnity.Editor.Services
 
             _operationLock.Dispose();
         }
-
-        #region TestRunnerApi callbacks
-
-        public void RunStarted(ITestAdaptor testsToRun)
-        {
-            _leafResults.Clear();
-            if (!IsTrackingCurrentJob)
-            {
-                return;
-            }
-            try
-            {
-                // Best-effort progress info for async polling (avoid heavy payloads).
-                int? total = null;
-                if (testsToRun != null)
-                {
-                    total = CountLeafTests(testsToRun);
-                }
-                TestJobManager.OnRunStarted(total);
-            }
-            catch
-            {
-                TestJobManager.OnRunStarted(null);
-            }
-        }
-
-        public void RunFinished(ITestResultAdaptor result)
-        {
-            // Always create payload and clean up job state, even if _runCompletionSource is null.
-            // This handles domain reload scenarios (e.g., PlayMode tests) where the TestRunnerService
-            // is recreated and _runCompletionSource is lost, but TestJobManager state persists via
-            // SessionState and the Test Runner still delivers the RunFinished callback.
-            var payload = TestRunResult.Create(result, _leafResults);
-            CompleteRun(payload, null);
-        }
-
-        public void OnError(string message)
-        {
-            // Build/prebuild failures use IErrorCallbacks instead of RunFinished.
-            CompleteRun(null, new InvalidOperationException(message ?? "Unity test run failed."));
-        }
-
-        private void CompleteRun(TestRunResult payload, Exception error)
-        {
-
-            // A late callback from a cleared job must not finish a newer job or restore
-            // settings belonging to it. Callbacks do not contain an MCP job identifier.
-            bool ownsCurrentJob = IsTrackingCurrentJob;
-            bool canCleanUp = ownsCurrentJob || !TestJobManager.HasRunningJob;
-            if (canCleanUp)
-            {
-                TestRunStatus.MarkFinished();
-            }
-            if (ownsCurrentJob)
-            {
-                if (error == null)
-                {
-                    TestJobManager.OnRunFinished();
-                    TestJobManager.FinalizeCurrentJobFromRunFinished(payload);
-                }
-                else
-                {
-                    TestJobManager.FinalizeCurrentJobFromRunError(error.Message);
-                }
-            }
-
-            // If a domain reload destroyed the original RunTestsAsync caller, the finally block
-            // that would normally restore EditorSettings never ran. Restore from SessionState.
-            if (canCleanUp && _trackedJobId != null && _runCompletionSource == null && PlayModeOptionsGuard.IsPending)
-            {
-                PlayModeOptionsGuard.Restore();
-            }
-
-            // Report result to awaiting caller if we have a completion source.
-            // The caller's finally block handles restoration in this case.
-            var completion = _runCompletionSource;
-            _runCompletionSource = null;
-            _trackedJobId = null;
-            if (completion != null)
-            {
-                if (error == null) completion.TrySetResult(payload);
-                else completion.TrySetException(error);
-            }
-        }
-
-        public void TestStarted(ITestAdaptor test)
-        {
-            if (!IsTrackingCurrentJob)
-            {
-                return;
-            }
-            try
-            {
-                // Prefer FullName for uniqueness; fall back to Name.
-                string fullName = test?.FullName;
-                if (string.IsNullOrWhiteSpace(fullName))
-                {
-                    fullName = test?.Name;
-                }
-                TestJobManager.OnTestStarted(fullName);
-            }
-            catch
-            {
-                // ignore
-            }
-        }
-
-        public void TestFinished(ITestResultAdaptor result)
-        {
-            if (result == null)
-            {
-                return;
-            }
-
-            if (!result.HasChildren && result.Test?.IsSuite != true)
-            {
-                _leafResults.Add(result);
-                try
-                {
-                    string fullName = result.Test?.FullName;
-                    if (string.IsNullOrWhiteSpace(fullName))
-                    {
-                        fullName = result.Test?.Name;
-                    }
-
-                    bool isFailure = false;
-                    string message = null;
-                    try
-                    {
-                        // NUnit outcomes are strings in the adaptor; keep it simple.
-                        string outcome = result.ResultState;
-                        if (!string.IsNullOrWhiteSpace(outcome))
-                        {
-                            var o = outcome.Trim().ToLowerInvariant();
-                            isFailure = o.Contains("failed") || o.Contains("error");
-                        }
-                        message = result.Message;
-                    }
-                    catch
-                    {
-                        // ignore adaptor quirks
-                    }
-
-                    if (IsTrackingCurrentJob)
-                    {
-                        TestJobManager.OnLeafTestFinished(fullName, isFailure, message);
-                    }
-                }
-                catch
-                {
-                    // ignore
-                }
-            }
-        }
-
-        #endregion
 
         private static int CountLeafTests(ITestAdaptor node)
         {
@@ -551,19 +271,26 @@ namespace MCPForUnity.Editor.Services
             PlayModeOptionsGuard.Clear();
         }
 
+        internal static void ValidateScenesBeforeTestRun()
+        {
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                var scene = SceneManager.GetSceneAt(i);
+                if (scene.isDirty && string.IsNullOrEmpty(scene.path))
+                    throw new UnsavedTestSceneException(scene.name);
+            }
+        }
+
         private static void SaveDirtyScenesIfNeeded()
         {
+            // Recheck after waiting for the service lock, before any scene save or native dispatch.
+            ValidateScenesBeforeTestRun();
             int sceneCount = SceneManager.sceneCount;
             for (int i = 0; i < sceneCount; i++)
             {
                 var scene = SceneManager.GetSceneAt(i);
                 if (scene.isDirty)
                 {
-                    if (string.IsNullOrEmpty(scene.path))
-                    {
-                        McpLog.Warn($"[TestRunnerService] Skipping unsaved scene '{scene.name}': save it manually before running tests.");
-                        continue;
-                    }
                     try
                     {
                         EditorSceneManager.SaveScene(scene);
@@ -576,288 +303,17 @@ namespace MCPForUnity.Editor.Services
             }
         }
 
-        #region Test list helpers
-
-        private async Task<ITestAdaptor> RetrieveTestRootAsync(TestMode mode)
-        {
-            var tcs = new TaskCompletionSource<ITestAdaptor>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            _testRunnerApi.RetrieveTestList(mode, root =>
-            {
-                tcs.TrySetResult(root);
-            });
-
-            // Ensure the editor pumps at least one additional update in case the window is unfocused.
-            EditorApplication.QueuePlayerLoopUpdate();
-
-            var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(30))).ConfigureAwait(true);
-            if (completed != tcs.Task)
-            {
-                McpLog.Warn($"[TestRunnerService] Timeout waiting for test retrieval callback for {mode}");
-                return null;
-            }
-
-            try
-            {
-                return await tcs.Task.ConfigureAwait(true);
-            }
-            catch (Exception ex)
-            {
-                McpLog.Error($"[TestRunnerService] Error retrieving tests for {mode}: {ex.Message}\n{ex.StackTrace}");
-                return null;
-            }
-        }
-
-        private static void CollectFromNode(
-            ITestAdaptor node,
-            TestMode mode,
-            List<Dictionary<string, string>> output,
-            HashSet<string> seen,
-            List<string> path)
-        {
-            if (node == null)
-            {
-                return;
-            }
-
-            bool hasName = !string.IsNullOrEmpty(node.Name);
-            if (hasName)
-            {
-                path.Add(node.Name);
-            }
-
-            bool hasChildren = node.HasChildren && node.Children != null;
-
-            if (!hasChildren)
-            {
-                string fullName = string.IsNullOrEmpty(node.FullName) ? node.Name ?? string.Empty : node.FullName;
-                string key = $"{mode}:{fullName}";
-
-                if (!string.IsNullOrEmpty(fullName) && seen.Add(key))
-                {
-                    string computedPath = path.Count > 0 ? string.Join("/", path) : fullName;
-                    output.Add(new Dictionary<string, string>
-                    {
-                        ["name"] = node.Name ?? fullName,
-                        ["full_name"] = fullName,
-                        ["path"] = computedPath,
-                        ["mode"] = mode.ToString(),
-                    });
-                }
-            }
-            else if (node.Children != null)
-            {
-                foreach (var child in node.Children)
-                {
-                    CollectFromNode(child, mode, output, seen, path);
-                }
-            }
-
-            if (hasName && path.Count > 0)
-            {
-                path.RemoveAt(path.Count - 1);
-            }
-        }
-
-        #endregion
     }
 
-    /// <summary>
-    /// Summary of a Unity test run.
-    /// </summary>
-    public sealed class TestRunResult
+    internal sealed class UnsavedTestSceneException : InvalidOperationException
     {
-        internal TestRunResult(TestRunSummary summary, IReadOnlyList<TestRunTestResult> results)
+        public string SceneName { get; }
+
+        public UnsavedTestSceneException(string sceneName)
+            : base("Save or close the modified unnamed scene in the Unity Editor before running tests.")
         {
-            Summary = summary;
-            Results = results;
-        }
-
-        public TestRunSummary Summary { get; }
-        public IReadOnlyList<TestRunTestResult> Results { get; }
-
-        public int Total => Summary.Total;
-        public int Passed => Summary.Passed;
-        public int Failed => Summary.Failed;
-        public int Skipped => Summary.Skipped;
-
-        public object ToSerializable(string mode, bool includeDetails = false, bool includeFailedTests = false)
-        {
-            // Determine which results to include
-            IEnumerable<object> resultsToSerialize;
-            if (includeDetails)
-            {
-                // Include all test results
-                resultsToSerialize = Results.Select(r => r.ToSerializable());
-            }
-            else if (includeFailedTests)
-            {
-                // Include only failed and skipped tests
-                resultsToSerialize = Results
-                    .Where(r => !string.Equals(r.State, "Passed", StringComparison.OrdinalIgnoreCase))
-                    .Select(r => r.ToSerializable());
-            }
-            else
-            {
-                // No individual test results
-                resultsToSerialize = null;
-            }
-
-            return new
-            {
-                mode,
-                summary = Summary.ToSerializable(),
-                results = resultsToSerialize?.ToList(),
-            };
-        }
-
-        internal static TestRunResult Create(ITestResultAdaptor summary, IReadOnlyList<ITestResultAdaptor> tests)
-        {
-            // RunFinished includes the complete result tree, including tests completed
-            // before a domain reload erased the service's per-test callback list.
-            var resultLeaves = new List<ITestResultAdaptor>();
-            if (summary != null && summary.HasChildren)
-            {
-                CollectResultLeaves(summary, resultLeaves);
-            }
-            var materializedTests = (resultLeaves.Count > 0 ? resultLeaves : tests)
-                .Where(t => t != null && t.Test?.IsSuite != true)
-                .Select(TestRunTestResult.FromAdaptor).ToList();
-
-            int passed = summary?.PassCount
-                ?? materializedTests.Count(t => string.Equals(t.State, "Passed", StringComparison.OrdinalIgnoreCase));
-            int failed = summary?.FailCount
-                ?? materializedTests.Count(t => string.Equals(t.State, "Failed", StringComparison.OrdinalIgnoreCase));
-            int skipped = summary?.SkipCount
-                ?? materializedTests.Count(t => string.Equals(t.State, "Skipped", StringComparison.OrdinalIgnoreCase));
-
-            double duration = summary?.Duration
-                ?? materializedTests.Sum(t => t.DurationSeconds);
-
-            int total = summary != null ? passed + failed + skipped : materializedTests.Count;
-
-            var summaryPayload = new TestRunSummary(
-                total,
-                passed,
-                failed,
-                skipped,
-                duration,
-                summary?.ResultState ?? "Unknown");
-
-            return new TestRunResult(summaryPayload, materializedTests);
-        }
-
-        private static void CollectResultLeaves(ITestResultAdaptor result, List<ITestResultAdaptor> leaves)
-        {
-            if (result == null)
-            {
-                return;
-            }
-            if (!result.HasChildren)
-            {
-                if (result.Test?.IsSuite != true) leaves.Add(result);
-                return;
-            }
-            if (result.Children != null)
-            {
-                foreach (var child in result.Children)
-                {
-                    CollectResultLeaves(child, leaves);
-                }
-            }
+            SceneName = string.IsNullOrEmpty(sceneName) ? "Untitled" : sceneName;
         }
     }
 
-    public sealed class TestRunSummary
-    {
-        internal TestRunSummary(int total, int passed, int failed, int skipped, double durationSeconds, string resultState)
-        {
-            Total = total;
-            Passed = passed;
-            Failed = failed;
-            Skipped = skipped;
-            DurationSeconds = durationSeconds;
-            ResultState = resultState;
-        }
-
-        public int Total { get; }
-        public int Passed { get; }
-        public int Failed { get; }
-        public int Skipped { get; }
-        public double DurationSeconds { get; }
-        public string ResultState { get; }
-
-        internal object ToSerializable()
-        {
-            return new
-            {
-                total = Total,
-                passed = Passed,
-                failed = Failed,
-                skipped = Skipped,
-                durationSeconds = DurationSeconds,
-                resultState = ResultState,
-            };
-        }
-    }
-
-    public sealed class TestRunTestResult
-    {
-        internal TestRunTestResult(
-            string name,
-            string fullName,
-            string state,
-            double durationSeconds,
-            string message,
-            string stackTrace,
-            string output)
-        {
-            Name = name;
-            FullName = fullName;
-            State = state;
-            DurationSeconds = durationSeconds;
-            Message = message;
-            StackTrace = stackTrace;
-            Output = output;
-        }
-
-        public string Name { get; }
-        public string FullName { get; }
-        public string State { get; }
-        public double DurationSeconds { get; }
-        public string Message { get; }
-        public string StackTrace { get; }
-        public string Output { get; }
-
-        internal object ToSerializable()
-        {
-            return new
-            {
-                name = Name,
-                fullName = FullName,
-                state = State,
-                durationSeconds = DurationSeconds,
-                message = Message,
-                stackTrace = StackTrace,
-                output = Output,
-            };
-        }
-
-        internal static TestRunTestResult FromAdaptor(ITestResultAdaptor adaptor)
-        {
-            if (adaptor == null)
-            {
-                return new TestRunTestResult(string.Empty, string.Empty, "Unknown", 0.0, string.Empty, string.Empty, string.Empty);
-            }
-
-            return new TestRunTestResult(
-                adaptor.Name,
-                adaptor.FullName,
-                adaptor.ResultState,
-                adaptor.Duration,
-                adaptor.Message,
-                adaptor.StackTrace,
-                adaptor.Output);
-        }
-    }
 }
