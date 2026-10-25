@@ -41,6 +41,15 @@ It returns the list of currently connected Editors with their `Name@hash`, proje
 
 ## Setting the active instance for the session
 
+For agents that must keep targeting the same Editor after an MCP session is replaced, use an
+instance-bound HTTP URL, such as `http://127.0.0.1:8080/mcp/instance/MyGame@a1b2c3d4`.
+Copy the exact `Name@hash` from `mcpforunity://instances` and URL-encode it when necessary.
+Every tool call and resource read uses that target, including after reconnecting with a new MCP
+session. A disconnected target produces an error; another connected Editor is never substituted.
+Conflicting `unity_instance` arguments or `set_active_instance` selections are refused.
+
+The original `/mcp` URL retains session selection and per-call routing:
+
 ```
 set_active_instance(instance="MyGame@a1b2c3d4")
 ```
@@ -77,6 +86,11 @@ The server accepts the same value formats as `set_active_instance`: `Name@hash`,
 - **Stdio**: port-number shorthand works because there's a separate Python process per client, and the session key is a per-subprocess UUID. HTTP shares one process and uses `Name@hash` exclusively.
 
 The session is the *only* key. It is deliberately not the client id — see the routing contract for why.
+
+Per-call targets are request-scoped, so parallel calls within one session can target different
+Editors without overwriting each other or changing the session default. The local CLI HTTP routes
+also require an unambiguous target when several Editors are connected; full `Name@hash` matches
+both parts exactly.
 
 ## Running several agents against one Editor
 

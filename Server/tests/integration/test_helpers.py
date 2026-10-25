@@ -26,6 +26,7 @@ class DummyContext:
         self.session_id = str(uuid.uuid4())
         # Add state storage to mimic FastMCP context state
         self._state = {}
+        self._request_state = {}
 
         class _RequestContext:
             def __init__(self, meta):
@@ -46,13 +47,13 @@ class DummyContext:
     async def error(self, message):
         self.log_error.append(message)
 
-    async def set_state(self, key, value):
+    async def set_state(self, key, value, *, serializable=True):
         """Set state value (mimics FastMCP context.set_state)"""
-        self._state[key] = value
+        (self._state if serializable else self._request_state)[key] = value
 
     async def get_state(self, key, default=None):
         """Get state value (mimics FastMCP context.get_state)"""
-        return self._state.get(key, default)
+        return self._request_state.get(key, self._state.get(key, default))
 
 
 class DummyMCP:

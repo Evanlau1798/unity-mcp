@@ -3,6 +3,7 @@ import logging
 import time
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.exceptions import HTTPException
 from core.config import config
 from services.custom_tool_service import CustomToolService, resolve_project_id_for_unity_instance
 from transport.plugin_hub import PluginHub
@@ -16,6 +17,23 @@ def _normalize_instance_token(instance_token: str | None) -> tuple[str | None, s
         return (name_part or None), (hash_part or None)
     return None, instance_token
 
+
+
+def _select_cli_session(sessions, token):
+    if token is not None and not isinstance(token, str):
+        raise HTTPException(400, "unity_instance must be a string")
+    if not token:
+        matches = list(sessions.items())
+    elif "@" in token:
+        matches = [(sid, d) for sid, d in sessions.items() if token == f"{d.project}@{d.hash}"]
+    else:
+        # Keep existing CLI shorthand only when it identifies one Editor.
+        matches = [(sid, d) for sid, d in sessions.items() if token in (d.hash, d.project)]
+    if not matches:
+        raise HTTPException(404, f"Unity instance '{token}' not found")
+    if len(matches) != 1:
+        raise HTTPException(409, "instance_selection_required: use exact Name@hash from /api/instances")
+    return matches[0]
 
 
 def register_http_routes(mcp, version_getter):
@@ -67,43 +85,7 @@ def register_http_routes(mcp, version_getter):
                         "error": "No Unity instances connected. Make sure Unity is running with MCP plugin."
                     }, status_code=503)
 
-                # Find target session
-                session_id = None
-                session_details = None
-                instance_name, instance_hash = _normalize_instance_token(
-                    unity_instance)
-                if unity_instance:
-                    # Try to match by hash or project name
-                    for sid, details in sessions.sessions.items():
-                        if details.hash == instance_hash or details.project in (instance_name, unity_instance):
-                            session_id = sid
-                            session_details = details
-                            break
-
-                # If a specific unity_instance was requested but not found, return an error
-                # (Check done here so execute_custom_tool can also validate the instance)
-                if unity_instance and not session_id:
-                    return JSONResponse(
-                        {
-                            "success": False,
-                            "error": f"Unity instance '{unity_instance}' not found",
-                        },
-                        status_code=404,
-                    )
-
-                # If no specific unity_instance requested, use first available session
-                # (Must be done before execute_custom_tool check so all command types benefit)
-                if not session_id:
-                    try:
-                        session_id = next(iter(sessions.sessions.keys()))
-                        session_details = sessions.sessions.get(session_id)
-                    except StopIteration:
-                        # No sessions available - sessions.sessions is empty
-                        # This should not happen since we checked at line 378, but handle gracefully
-                        return JSONResponse({
-                            "success": False,
-                            "error": "No Unity instances connected. Make sure Unity is running with MCP plugin."
-                        }, status_code=503)
+                session_id, session_details = _select_cli_session(sessions.sessions, unity_instance)
 
                 # Custom tool execution - must be checked BEFORE the final PluginHub.send_command call
                 # This applies to both cases: with or without explicit unity_instance
@@ -162,6 +144,8 @@ def register_http_routes(mcp, version_getter):
                 result = await PluginHub.send_command(session_id, command_type, params)
                 return JSONResponse(result)
 
+            except HTTPException as exc:
+                return JSONResponse({"success": False, "error": exc.detail}, status_code=exc.status_code)
             except Exception as e:
                 logger.exception("CLI command error: %s", e)
                 return JSONResponse({"success": False, "error": str(e)}, status_code=500)
@@ -181,6 +165,8 @@ def register_http_routes(mcp, version_getter):
                         "connected_at": details.connected_at,
                     })
                 return JSONResponse({"success": True, "instances": instances})
+            except HTTPException as exc:
+                return JSONResponse({"success": False, "error": exc.detail}, status_code=exc.status_code)
             except Exception as e:
                 return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
@@ -189,9 +175,6 @@ def register_http_routes(mcp, version_getter):
             """REST endpoint to list custom tools for the active Unity project."""
             try:
                 unity_instance = request.query_params.get("instance")
-                instance_name, instance_hash = _normalize_instance_token(
-                    unity_instance)
-
                 sessions = await PluginHub.get_sessions()
                 if not sessions.sessions:
                     return JSONResponse({
@@ -199,24 +182,7 @@ def register_http_routes(mcp, version_getter):
                         "error": "No Unity instances connected. Make sure Unity is running with MCP plugin."
                     }, status_code=503)
 
-                session_details = None
-                if unity_instance:
-                    # Try to match by hash or project name
-                    for _, details in sessions.sessions.items():
-                        if details.hash == instance_hash or details.project in (instance_name, unity_instance):
-                            session_details = details
-                            break
-                    if not session_details:
-                        return JSONResponse(
-                            {
-                                "success": False,
-                                "error": f"Unity instance '{unity_instance}' not found",
-                            },
-                            status_code=404,
-                        )
-                else:
-                    # No specific unity_instance requested: use first available session
-                    session_details = next(iter(sessions.sessions.values()))
+                _, session_details = _select_cli_session(sessions.sessions, unity_instance)
 
                 unity_instance_hint = unity_instance
                 if session_details and session_details.hash:
@@ -243,6 +209,8 @@ def register_http_routes(mcp, version_getter):
                     "tool_count": len(tools_payload),
                     "tools": tools_payload,
                 })
+            except HTTPException as exc:
+                return JSONResponse({"success": False, "error": exc.detail}, status_code=exc.status_code)
             except Exception as e:
                 logger.exception("CLI custom tools error: %s", e)
                 return JSONResponse({"success": False, "error": str(e)}, status_code=500)

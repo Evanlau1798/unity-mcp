@@ -74,10 +74,16 @@ immediately rather than left to time out. That eviction is the domain-reload rec
 
 ## The routing rules
 
-Three mechanisms, checked in this order.
+An instance-bound HTTP URL (`/mcp/instance/{Name@hash}`) fixes the exact target for each request,
+including resources and replacement MCP sessions. Conflicting per-call or session selections are
+rejected. Target resolution and API-key authorization remain the same as on `/mcp`.
+
+The original `/mcp` and stdio endpoints use three mechanisms, checked in this order.
 
 **A per-call `unity_instance` argument wins.** The middleware pops it out of the tool arguments before
 validation, so no tool declares it in its own signature. This is stateless and needs no prior setup.
+Injected routing keys use FastMCP request state (`serializable=False`); only the explicit session
+selection persists. Parallel calls within a session cannot overwrite each other's targets.
 
 **Otherwise, the session pin applies.** `set_active_instance` stores a choice in session state keyed on
 `ctx.session_id`. The key must be the session and nothing else. #1023 was caused by keying on the
@@ -168,11 +174,10 @@ be a real constraint, it deserves its own design starting from profiling data.
 
 ## Known gaps
 
-**The REST route still guesses.** `/api/command`, which is what the CLI talks to, falls back to
-`next(iter(sessions.sessions.keys()))` when no instance is given. That is the coin flip removed from
-the MCP path, still present on this one. It also matches hashes by exact equality only, so an
-identifier that works as an MCP argument can 404 through the CLI, and it is not registered at all in
-remote-hosted mode.
+**REST selector formats differ.** The local `/api/command` and `/api/custom-tools` routes accept an
+exact `Name@hash`, exact hash, or unique project name. They refuse ambiguous selection with HTTP 409,
+and a missing full identifier returns 404 without dispatching. Hash prefixes remain MCP-only, and
+these CLI routes are not registered in remote-hosted mode.
 
 **A pin to a departed Editor costs 20 seconds and then reports the wrong thing.** When a target hash is
 set, the ambiguity checks in the resolve loop are skipped, so a pin to an Editor that has gone away
@@ -204,17 +209,10 @@ calls stay far below the 30 second budget, so this needs a genuinely long comman
 deletes them when an MCP session ends, so under HTTP every terminated session leaves entries behind
 for up to a day.
 
-**Two state keys, two lifetimes.** The pin is stored under `mcpforunity.active_instance`, but tools read
-`unity_instance`, which the middleware rewrites on every call. A per-call override written to the
-second key can therefore outlive the call that set it, which contradicts the documented promise that
-per-call routing does not change the session default.
-
 ## Contributing
 
-Work that implements these rules, closes the REST-route gap, or improves discovery and schema
-advertisement is wanted. Work that adds a fourth routing rule, widens the selector grammar, or
-introduces a brokering layer will be declined, and that is a statement about surface area rather than
-about code quality.
+Changes should preserve explicit targeting, fail-closed ambiguity handling, and compatibility with
+the original `/mcp` endpoint. Discovery and schema improvements should follow the same contract.
 
 The routing logic lives in `Server/src/transport/unity_instance_middleware.py`. If a change needs to
 touch a dozen files to express itself, that usually means it is working against the contract rather

@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse
 
 from core.config import config
 from transport import managed_lifetime
+from transport.instance_endpoint import attach_instance_route
 
 
 def is_loopback_peer(host) -> bool:
@@ -75,7 +76,9 @@ async def serve_http(mcp, host: str, port: int, sockets=None) -> None:
         server.should_exit = True
 
     install_managed_stop(mcp, lifetime, shutdown)
-    app = ManagedConnections(mcp.http_app(transport="http"), lifetime)
+    http_app = mcp.http_app(transport="http")
+    attach_instance_route(http_app)
+    app = ManagedConnections(http_app, lifetime)
     server = uvicorn.Server(uvicorn.Config(
         app, host=host, port=port, log_level=config.log_level.lower(),
         lifespan="on", ws="websockets-sansio", timeout_graceful_shutdown=0,
