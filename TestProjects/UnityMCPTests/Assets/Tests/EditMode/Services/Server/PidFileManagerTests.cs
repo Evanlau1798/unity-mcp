@@ -1,9 +1,6 @@
 using System.IO;
 using NUnit.Framework;
 using MCPForUnity.Editor.Services.Server;
-using MCPForUnity.Editor.Constants;
-using UnityEditor;
-using UnityEngine;
 
 namespace MCPForUnityTests.Editor.Services.Server
 {
@@ -15,13 +12,13 @@ namespace MCPForUnityTests.Editor.Services.Server
     {
         private PidFileManager _manager;
         private string _testPidFilePath;
+        private string _testProjectRoot;
 
         [SetUp]
         public void SetUp()
         {
-            _manager = new PidFileManager();
-            // Clear any test state
-            ClearTestEditorPrefs();
+            _testProjectRoot = Path.Combine(Path.GetTempPath(), "MCPForUnity-PidTests", System.Guid.NewGuid().ToString("N"));
+            _manager = new PidFileManager(_testProjectRoot, 8080);
         }
 
         [TearDown]
@@ -32,18 +29,8 @@ namespace MCPForUnityTests.Editor.Services.Server
             {
                 try { File.Delete(_testPidFilePath); } catch { }
             }
-            // Clear test state
-            ClearTestEditorPrefs();
-        }
-
-        private void ClearTestEditorPrefs()
-        {
-            try { EditorPrefs.DeleteKey(EditorPrefKeys.LastLocalHttpServerPid); } catch { }
-            try { EditorPrefs.DeleteKey(EditorPrefKeys.LastLocalHttpServerPort); } catch { }
-            try { EditorPrefs.DeleteKey(EditorPrefKeys.LastLocalHttpServerStartedUtc); } catch { }
-            try { EditorPrefs.DeleteKey(EditorPrefKeys.LastLocalHttpServerPidArgsHash); } catch { }
-            try { EditorPrefs.DeleteKey(EditorPrefKeys.LastLocalHttpServerPidFilePath); } catch { }
-            try { EditorPrefs.DeleteKey(EditorPrefKeys.LastLocalHttpServerInstanceToken); } catch { }
+            _manager.ClearTracking();
+            if (Directory.Exists(_testProjectRoot)) Directory.Delete(_testProjectRoot, true);
         }
 
         #region GetPidFilePath Tests
@@ -254,10 +241,10 @@ namespace MCPForUnityTests.Editor.Services.Server
         #region Handshake Tests
 
         [Test]
-        public void StoreHandshake_ValidData_StoresInEditorPrefs()
+        public void StoreHandshake_ValidData_PreservesSessionOwnership()
         {
             // Arrange
-            string pidFilePath = "/test/path.pid";
+            string pidFilePath = _manager.GetPidFilePath(8080);
             string instanceToken = "test-token-123";
 
             // Act
@@ -341,7 +328,7 @@ namespace MCPForUnityTests.Editor.Services.Server
         {
             // Arrange
             _manager.StoreTracking(12345, 8080, "somehash");
-            _manager.StoreHandshake("/path.pid", "token");
+            _manager.StoreHandshake(_manager.GetPidFilePath(8080), "token");
 
             // Act
             _manager.ClearTracking();
