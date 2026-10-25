@@ -25,7 +25,8 @@ class PluginRoutingMixin:
             success=False,
             error="Unity session not available; please retry",
             hint="retry",
-            data={"reason": reason, "retry_after_ms": 250},
+            data={"reason": reason, "retry_after_ms": 250, "phase": "session_resolve",
+                  "execution_may_have_started": False},
         ).model_dump()
 
 
@@ -229,10 +230,12 @@ class PluginRoutingMixin:
             max_wait_s = _read_bounded_wait_env(
                 "UNITY_MCP_SESSION_READY_WAIT_SECONDS", default_s=6.0, max_s=120.0)
             if max_wait_s > 0:
-                deadline = time.monotonic() + max_wait_s
+                readiness_started = time.monotonic()
+                deadline = readiness_started + max_wait_s
                 while time.monotonic() < deadline:
                     try:
-                        probe = await cls.send_command(session_id, "ping", {})
+                        probe = await asyncio.wait_for(cls.send_command(session_id, "ping", {}),
+                                                       timeout=max(0, deadline - time.monotonic()))
                     except Exception:
                         probe = None
 
@@ -242,13 +245,16 @@ class PluginRoutingMixin:
                             probe.get("result"), dict) else {}
                         if result.get("message") == "pong":
                             break
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(min(0.1, max(0, deadline - time.monotonic())))
                 else:
                     # Not ready within the bounded window: return retry hint without sending.
                     return MCPResponse(
                         success=False,
                         error=f"Unity session not ready for '{command_type}' (ping not answered); please retry",
                         hint="retry",
+                        data={"phase": "editor_readiness", "reason": "ping_not_answered",
+                              "elapsed_ms": round((time.monotonic() - readiness_started) * 1000),
+                              "execution_may_have_started": False, "editor_state": "unknown"},
                     ).model_dump()
 
         return await cls.send_command(session_id, command_type, params)

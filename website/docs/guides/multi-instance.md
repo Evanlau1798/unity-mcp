@@ -121,10 +121,11 @@ command, and neither can Unity. Whether a failed command is safe to retry depend
 | Where the command was when the server gave up | Effect | Safe to retry |
 |---|---|---|
 | Not yet dispatched (instance resolution failed) | None | Yes |
-| Queued, never started (connection torn down) | None | Yes |
+| Native cancellation reports `editor_queue` and `execution_may_have_started=false` | None | Yes |
+| Connection torn down without a native queue/execution report | Unknown | Inspect state first |
 | Already executing in Unity, exceeded the timeout | **Applied** — late result is discarded | No, applies twice |
 
-The last row is the one to watch. The command runs to completion and its result is dropped, so the
+The execution row is the one to watch. The command can run to completion and its result be dropped, so the
 caller is told it failed while the effect landed. It needs a command that exceeds the 30 second budget
 *after* Unity has begun executing it, which ordinary tool calls do not approach — but `execute_code`,
 long imports and test runs can. Treat `hint: "retry"` on those as "check before retrying", not

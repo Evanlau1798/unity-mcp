@@ -5,6 +5,7 @@ import logging
 from typing import Awaitable, Callable, TypeVar
 
 from transport.plugin_hub import InstanceSelectionRequiredError, PluginHub
+from transport.plugin_errors import CommandDeadlineError
 from core.config import config
 from core.constants import API_KEY_HEADER
 from services.api_key_service import ApiKeyService
@@ -98,6 +99,10 @@ async def send_with_unity_instance(
                     },
                 ).model_dump()
             )
+        except CommandDeadlineError as exc:
+            return normalize_unity_response(MCPResponse(
+                success=False, error=str(exc), hint="check_state_before_retry", data=exc.diagnostics,
+            ).model_dump())
         except Exception as exc:
             # NOTE: asyncio.TimeoutError has an empty str() by default, which is confusing for clients.
             err = str(exc) or f"{type(exc).__name__}"
@@ -105,7 +110,8 @@ async def send_with_unity_instance(
             # The client can decide whether retrying is appropriate for the command.
             return normalize_unity_response(
                 MCPResponse(success=False, error=err,
-                            hint="retry").model_dump()
+                            hint="retry" if command_type in PluginHub._FAST_FAIL_COMMANDS else "check_state_before_retry",
+                            data={"phase": "transport_unknown", "execution_may_have_started": True}).model_dump()
             )
 
     if unity_instance:

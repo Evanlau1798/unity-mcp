@@ -65,6 +65,8 @@ def parse_resource_response(response: Any, typed_cls: Type[MCPResponse]) -> MCPR
             success=False,
             error=response.get("error"),
             message=response.get("message"),
+            hint=response.get("hint"),
+            data=response.get("data"),
         )
 
     return typed_cls(**response)

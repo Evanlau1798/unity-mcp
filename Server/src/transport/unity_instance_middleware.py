@@ -367,47 +367,6 @@ class UnityInstanceMiddleware(UnityToolVisibilityMixin, Middleware):
             active_instance = await self.get_active_instance(ctx)
         if not active_instance:
             active_instance = await self._maybe_autoselect_instance(ctx)
-        if active_instance:
-            # If using HTTP transport (PluginHub configured), validate session
-            # But for stdio transport (no PluginHub needed or maybe partially configured),
-            # we should be careful not to clear instance just because PluginHub can't resolve it.
-            # The 'active_instance' (Name@hash) might be valid for stdio even if PluginHub fails.
-
-            session_id: str | None = None
-            # Only validate via PluginHub if we are actually using HTTP transport.
-            # For stdio transport, skip PluginHub entirely - we only need the instance ID.
-            from transport.unity_transport import _is_http_transport
-            if _is_http_transport() and PluginHub.is_configured():
-                try:
-                    # resolving session_id might fail if the plugin disconnected
-                    # We only need session_id for HTTP transport routing.
-                    # For stdio, we just need the instance ID.
-                    # Pass user_id for remote-hosted mode session isolation
-                    session_id = await PluginHub._resolve_session_id(active_instance, user_id=user_id)
-                except (ConnectionError, ValueError, KeyError, TimeoutError) as exc:
-                    # If resolution fails, it means the Unity instance is not reachable via HTTP/WS.
-                    # If we are in stdio mode, this might still be fine if the user is just setting state?
-                    # But usually if PluginHub is configured, we expect it to work.
-                    # Let's LOG the error but NOT clear the instance immediately to avoid flickering,
-                    # or at least debug why it's failing.
-                    logger.debug(
-                        "PluginHub session resolution failed for %s: %s; leaving active_instance unchanged",
-                        active_instance,
-                        exc,
-                        exc_info=True,
-                    )
-                except Exception as exc:
-                    # Re-raise unexpected system exceptions to avoid swallowing critical failures
-                    if isinstance(exc, (SystemExit, KeyboardInterrupt)):
-                        raise
-                    logger.error(
-                        "Unexpected error during PluginHub session resolution for %s: %s",
-                        active_instance,
-                        exc,
-                        exc_info=True
-                    )
-
-            await ctx.set_state("unity_session_id", session_id, serializable=False)
         # Shadow any old persisted injection, including when this request has no target.
         await ctx.set_state("unity_instance", active_instance, serializable=False)
 

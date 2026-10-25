@@ -7,6 +7,7 @@ from starlette.exceptions import HTTPException
 from core.config import config
 from services.custom_tool_service import CustomToolService, resolve_project_id_for_unity_instance
 from transport.plugin_hub import PluginHub
+from transport.plugin_errors import CommandDeadlineError
 logger = logging.getLogger("mcp-for-unity-server")
 
 def _normalize_instance_token(instance_token: str | None) -> tuple[str | None, str | None]:
@@ -146,6 +147,9 @@ def register_http_routes(mcp, version_getter):
 
             except HTTPException as exc:
                 return JSONResponse({"success": False, "error": exc.detail}, status_code=exc.status_code)
+            except CommandDeadlineError as exc:
+                return JSONResponse({"success": False, "error": str(exc),
+                                     "hint": "check_state_before_retry", "data": exc.diagnostics}, status_code=504)
             except Exception as e:
                 logger.exception("CLI command error: %s", e)
                 return JSONResponse({"success": False, "error": str(e)}, status_code=500)

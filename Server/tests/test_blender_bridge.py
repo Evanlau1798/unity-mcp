@@ -228,7 +228,9 @@ class TestBlenderTimeouts:
                 result = await blender_bridge(MagicMock(), action="import_model", timeout_seconds=requested)
             assert result["success"]
             assert messages[0]["timeout"] == expected
-            assert waits == [expected + 5]
+            assert len(waits) == 2  # Send and result share one shrinking deadline.
+            assert expected + 4.9 <= waits[0] <= expected + 5
+            assert 0 < waits[1] <= waits[0]
             assert not PluginHub._pending
 
         asyncio.run(exercise())

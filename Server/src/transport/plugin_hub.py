@@ -82,7 +82,7 @@ def _install_session_tracking() -> None:
     MiddlewareServerSession.__aenter__ = _tracking_aenter  # type: ignore[assignment]
 
 
-from transport.plugin_errors import PluginDisconnectedError, NoUnitySessionError, InstanceSelectionRequiredError
+from transport.plugin_errors import PluginDisconnectedError, NoUnitySessionError, InstanceSelectionRequiredError, CommandDeadlineError
 from transport.plugin_connections import PluginConnectionsMixin
 from transport.plugin_registration import PluginRegistrationMixin
 from transport.plugin_routing import PluginRoutingMixin
@@ -198,6 +198,9 @@ class PluginHub(PluginConnectionsMixin, PluginRegistrationMixin, PluginRoutingMi
             cls._pending[command_id] = {
                 "future": future, "session_id": session_id}
 
+        started = time.monotonic()
+        deadline = started + server_wait_s
+        phase = "transport_send"
         try:
             msg = ExecuteCommandMessage(
                 id=command_id,
@@ -205,34 +208,34 @@ class PluginHub(PluginConnectionsMixin, PluginRegistrationMixin, PluginRoutingMi
                 params=params,
                 timeout=unity_timeout_s,
             )
-            try:
-                await websocket.send_json(msg.model_dump())
-            except BaseException:
-                # We have not started awaiting this Future yet. Giving it an
-                # exception creates an orphaned "Future exception was never
-                # retrieved" warning when send_json fails on a closed socket.
-                # Disconnect cleanup may already have completed the Future,
-                # in which case consume that exception before re-raising the
-                # original transport failure (including cancellation).
-                if not future.done():
-                    future.cancel()
-                elif not future.cancelled():
-                    future.exception()
-                raise
-            try:
-                result = await asyncio.wait_for(future, timeout=server_wait_s)
-                return result
-            except PluginDisconnectedError as exc:
-                return MCPResponse(success=False, error=str(exc), hint="retry").model_dump()
-            except asyncio.TimeoutError:
-                if command_type in cls._FAST_FAIL_COMMANDS:
-                    return MCPResponse(
-                        success=False,
-                        error=f"Unity did not respond to '{command_type}' within {server_wait_s:.1f}s; please retry",
-                        hint="retry",
-                    ).model_dump()
-                raise
+            await asyncio.wait_for(websocket.send_json(msg.model_dump()), timeout=max(0, deadline - time.monotonic()))
+            phase = "command_response"
+            result = await asyncio.wait_for(future, timeout=max(0, deadline - time.monotonic()))
+            if time.monotonic() - started >= 2:
+                logger.info("Unity command completed: id=%s session=%s command=%s elapsed_ms=%d",
+                            command_id, session_id, command_type, (time.monotonic() - started) * 1000)
+            return result
+        except PluginDisconnectedError as exc:
+            return MCPResponse(success=False, error=str(exc), hint="check_state_before_retry",
+                               data={"phase": phase, "execution_may_have_started": True,
+                                     "command_id": command_id, "session_id": session_id}).model_dump()
+        except asyncio.TimeoutError as exc:
+            diagnostics = {"phase": phase, "command_id": command_id, "session_id": session_id,
+                           "elapsed_ms": round((time.monotonic() - started) * 1000),
+                           "timeout_ms": round(server_wait_s * 1000), "execution_may_have_started": True}
+            if command_type in cls._FAST_FAIL_COMMANDS:
+                return MCPResponse(
+                    success=False,
+                    error=f"Unity did not respond to '{command_type}' within {server_wait_s:.1f}s; please retry",
+                    hint="retry", data=diagnostics,
+                ).model_dump()
+            raise CommandDeadlineError(command_type, diagnostics) from exc
         finally:
+            # Cancellation/send failure can arrive before this Future has ever been awaited.
+            if not future.done():
+                future.cancel()
+            elif not future.cancelled():
+                future.exception()
             async with lock:
                 cls._pending.pop(command_id, None)
 

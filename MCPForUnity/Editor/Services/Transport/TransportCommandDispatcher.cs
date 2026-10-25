@@ -18,7 +18,7 @@ namespace MCPForUnity.Editor.Services.Transport
     /// the legacy response format expected by the server.
     /// </summary>
     [InitializeOnLoad]
-    internal static class TransportCommandDispatcher
+    internal static partial class TransportCommandDispatcher
     {
         private static SynchronizationContext _mainThreadContext;
         private static int _mainThreadId;
@@ -29,22 +29,20 @@ namespace MCPForUnity.Editor.Services.Transport
             public PendingCommand(
                 string commandJson,
                 TaskCompletionSource<string> completionSource,
-                CancellationToken cancellationToken,
-                CancellationTokenRegistration registration)
+                CancellationToken cancellationToken)
             {
                 CommandJson = commandJson;
                 CompletionSource = completionSource;
                 CancellationToken = cancellationToken;
-                CancellationRegistration = registration;
-                QueuedAt = DateTime.UtcNow;
             }
 
             public string CommandJson { get; }
             public TaskCompletionSource<string> CompletionSource { get; }
             public CancellationToken CancellationToken { get; }
-            public CancellationTokenRegistration CancellationRegistration { get; }
+            public CancellationTokenRegistration CancellationRegistration { get; set; }
             public bool IsExecuting { get; set; }
-            public DateTime QueuedAt { get; }
+            public System.Diagnostics.Stopwatch Clock { get; } = System.Diagnostics.Stopwatch.StartNew();
+            public long? DispatchWaitMs { get; set; }
 
             public void Dispose()
             {
@@ -56,10 +54,6 @@ namespace MCPForUnity.Editor.Services.Transport
                 CompletionSource.TrySetResult(payload);
             }
 
-            public void TrySetCanceled()
-            {
-                CompletionSource.TrySetCanceled(CancellationToken);
-            }
         }
 
         private static readonly Dictionary<string, PendingCommand> Pending = new();
@@ -99,15 +93,20 @@ namespace MCPForUnity.Editor.Services.Transport
             var id = Guid.NewGuid().ToString("N");
             var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            var registration = cancellationToken.CanBeCanceled
-                ? cancellationToken.Register(() => CancelPending(id, cancellationToken))
-                : default;
-
-            var pending = new PendingCommand(commandJson, tcs, cancellationToken, registration);
+            var pending = new PendingCommand(commandJson, tcs, cancellationToken);
 
             lock (PendingLock)
             {
                 Pending[id] = pending;
+            }
+            // Register after insertion: an already-canceled token invokes this callback synchronously.
+            pending.CancellationRegistration = cancellationToken.CanBeCanceled
+                ? cancellationToken.Register(() => CancelPending(id, cancellationToken))
+                : default;
+            if (tcs.Task.IsCompleted)
+            {
+                pending.Dispose();
+                return tcs.Task;
             }
 
             // Proactively wake up the main thread execution loop. This improves responsiveness
@@ -140,6 +139,7 @@ namespace MCPForUnity.Editor.Services.Transport
                         return;
                     }
 
+                    try { EditorApplication.QueuePlayerLoopUpdate(); } catch { }
                     var result = func();
                     tcs.TrySetResult(result);
                 }
@@ -153,12 +153,14 @@ namespace MCPForUnity.Editor.Services.Transport
                 }
             }
 
-            // Best-effort nudge: if we're posting from a background thread (e.g., websocket receive),
-            // encourage Unity to run a loop iteration so the posted callback can execute even when unfocused.
-            try { EditorApplication.QueuePlayerLoopUpdate(); } catch { }
-
-            if (_mainThreadContext != null && Thread.CurrentThread.ManagedThreadId != _mainThreadId)
+            if (Thread.CurrentThread.ManagedThreadId != _mainThreadId)
             {
+                if (_mainThreadContext == null)
+                {
+                    registration.Dispose();
+                    tcs.TrySetException(new InvalidOperationException("Unity main-thread context is unavailable."));
+                    return tcs.Task;
+                }
                 _mainThreadContext.Post(_ => Invoke(), null);
                 return tcs.Task;
             }
@@ -184,9 +186,9 @@ namespace MCPForUnity.Editor.Services.Transport
                 ProcessQueue();
             }
 
-            if (_mainThreadContext != null && Thread.CurrentThread.ManagedThreadId != _mainThreadId)
+            if (Thread.CurrentThread.ManagedThreadId != _mainThreadId)
             {
-                _mainThreadContext.Post(_ => Pump(), null);
+                _mainThreadContext?.Post(_ => Pump(), null);
                 return;
             }
 
@@ -268,175 +270,6 @@ namespace MCPForUnity.Editor.Services.Transport
             }
         }
 
-        private static void ProcessCommand(string id, PendingCommand pending)
-        {
-            if (pending.CancellationToken.IsCancellationRequested)
-            {
-                RemovePending(id, pending);
-                pending.TrySetCanceled();
-                return;
-            }
-
-            string commandText = pending.CommandJson?.Trim();
-            if (string.IsNullOrEmpty(commandText))
-            {
-                pending.TrySetResult(SerializeError("Empty command received"));
-                RemovePending(id, pending);
-                return;
-            }
-
-            if (string.Equals(commandText, "ping", StringComparison.OrdinalIgnoreCase))
-            {
-                var pingResponse = new
-                {
-                    status = "success",
-                    result = new { message = "pong" }
-                };
-                pending.TrySetResult(JsonConvert.SerializeObject(pingResponse));
-                RemovePending(id, pending);
-                return;
-            }
-
-            if (!IsValidJson(commandText))
-            {
-                var invalidJsonResponse = new
-                {
-                    status = "error",
-                    error = "Invalid JSON format",
-                    receivedText = commandText.Length > 50 ? commandText[..50] + "..." : commandText
-                };
-                pending.TrySetResult(JsonConvert.SerializeObject(invalidJsonResponse));
-                RemovePending(id, pending);
-                return;
-            }
-
-            try
-            {
-                var command = JsonConvert.DeserializeObject<Command>(commandText);
-                if (command == null)
-                {
-                    pending.TrySetResult(SerializeError("Command deserialized to null", "Unknown", commandText));
-                    RemovePending(id, pending);
-                    return;
-                }
-
-                if (string.IsNullOrWhiteSpace(command.type))
-                {
-                    pending.TrySetResult(SerializeError("Command type cannot be empty"));
-                    RemovePending(id, pending);
-                    return;
-                }
-
-                if (string.Equals(command.type, "ping", StringComparison.OrdinalIgnoreCase))
-                {
-                    var pingResponse = new
-                    {
-                        status = "success",
-                        result = new { message = "pong" }
-                    };
-                    pending.TrySetResult(JsonConvert.SerializeObject(pingResponse));
-                    RemovePending(id, pending);
-                    return;
-                }
-
-                var parameters = command.@params ?? new JObject();
-
-                // An unknown command is the caller's mistake or a version mismatch (a server or
-                // CLI newer than this package), not an Editor fault: answer it without logging
-                // an error and a stack trace to the user's console.
-                if (!CommandRegistry.HasHandler(command.type))
-                {
-                    string unknown = $"Unity has no tool or resource named '{command.type}'. If the MCP server " +
-                        "or CLI is newer than the MCP for Unity package in this project, update the package.";
-                    McpLog.Warn(unknown);
-                    pending.TrySetResult(SerializeError(unknown, command.type));
-                    RemovePending(id, pending);
-                    return;
-                }
-
-                // Block execution of disabled resources
-                var resourceMeta = MCPServiceLocator.ResourceDiscovery.GetResourceMetadata(command.type);
-                if (resourceMeta != null && !MCPServiceLocator.ResourceDiscovery.IsResourceEnabled(command.type))
-                {
-                    pending.TrySetResult(SerializeError(
-                        $"Resource '{command.type}' is disabled in the Unity Editor."));
-                    RemovePending(id, pending);
-                    return;
-                }
-
-                // Block execution of disabled tools
-                var toolMeta = MCPServiceLocator.ToolDiscovery.GetToolMetadata(command.type);
-                if (toolMeta != null && !MCPServiceLocator.ToolDiscovery.IsToolEnabled(command.type))
-                {
-                    pending.TrySetResult(SerializeError(
-                        $"Tool '{command.type}' is disabled in the Unity Editor."));
-                    RemovePending(id, pending);
-                    return;
-                }
-
-                var logType = resourceMeta != null ? "resource" : toolMeta != null ? "tool" : "unknown";
-                var sw = McpLogRecord.IsEnabled ? System.Diagnostics.Stopwatch.StartNew() : null;
-                var result = CommandRegistry.ExecuteCommand(command.type, parameters, pending.CompletionSource);
-
-                if (result == null)
-                {
-                    // Async command – cleanup after completion on next editor frame to preserve order.
-                    var capturedType = command.type;
-                    var capturedParams = parameters;
-                    var capturedLogType = logType;
-                    pending.CompletionSource.Task.ContinueWith(t =>
-                    {
-                        sw?.Stop();
-                        var logStatus = "SUCCESS";
-                        string logError = null;
-                        if (t.IsFaulted)
-                        {
-                            logStatus = "ERROR";
-                            logError = t.Exception?.InnerException?.Message;
-                        }
-                        else if (t.IsCompletedSuccessfully && t.Result != null)
-                        {
-                            try
-                            {
-                                var resultObj = JObject.Parse(t.Result);
-                                if (string.Equals(resultObj.Value<string>("status"), "error", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    logStatus = "ERROR";
-                                    logError = resultObj.Value<string>("error");
-                                }
-                            }
-                            catch { }
-                        }
-                        McpLogRecord.Log(capturedType, capturedParams, capturedLogType,
-                            logStatus, sw?.ElapsedMilliseconds ?? 0, logError);
-                        EditorApplication.delayCall += () => RemovePending(id, pending);
-                    }, TaskScheduler.Default);
-                    return;
-                }
-
-                sw?.Stop();
-
-                string syncLogStatus = "SUCCESS";
-                string syncLogError = null;
-                if (result is ErrorResponse errResp)
-                {
-                    syncLogStatus = "ERROR";
-                    syncLogError = errResp.Error;
-                }
-                McpLogRecord.Log(command.type, parameters, logType, syncLogStatus, sw?.ElapsedMilliseconds ?? 0, syncLogError);
-
-                var response = new { status = "success", result };
-                pending.TrySetResult(JsonConvert.SerializeObject(response));
-                RemovePending(id, pending);
-            }
-            catch (Exception ex)
-            {
-                McpLog.Error($"Error processing command: {ex.Message}\n{ex.StackTrace}");
-                pending.TrySetResult(SerializeError(ex.Message, "Unknown (error during processing)", ex.StackTrace));
-                RemovePending(id, pending);
-            }
-        }
-
         private static void CancelPending(string id, CancellationToken token)
         {
             PendingCommand pending = null;
@@ -448,7 +281,24 @@ namespace MCPForUnity.Editor.Services.Transport
                 }
             }
 
-            pending?.TrySetCanceled();
+            if (pending != null)
+            {
+                string phase = pending.DispatchWaitMs.HasValue ? "editor_execution" : "editor_queue";
+                string error = $"Command canceled or deadline exceeded during {phase}";
+                pending.TrySetResult(JsonConvert.SerializeObject(new
+                {
+                    status = "error", error,
+                    result = new { success = false, error,
+                    hint = pending.DispatchWaitMs.HasValue ? "check_state_before_retry" : "retry", data = new
+                    {
+                        phase,
+                        elapsed_ms = pending.Clock.ElapsedMilliseconds,
+                        queue_wait_ms = pending.DispatchWaitMs ?? pending.Clock.ElapsedMilliseconds,
+                        execution_may_have_started = pending.DispatchWaitMs.HasValue,
+                        observed_at_unix_ms = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    } }
+                }));
+            }
             pending?.Dispose();
         }
 

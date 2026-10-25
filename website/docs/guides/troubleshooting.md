@@ -8,6 +8,38 @@ description: Real-world fixes for the issues people actually hit — macOS dyld 
 
 # Common Setup Problems
 
+## Slow Editor replies, ping timeouts, and historical Play Mode messages
+
+Read `mcpforunity://editor/state` from the intended instance. Check its `unity.instance_id`,
+`observed_at_unix_ms`, `sequence`, and `staleness` before interpreting `editor.play_mode.is_playing`.
+A fresh native snapshot describes the current mode. An older `Editor.log` entry about entering
+Play Mode, domain reload, NDMF, or tests describes a historical event; it does not override a fresh
+`is_playing=false`. A timeout or stale snapshot means the current state is unknown. Do not infer
+Play Mode from a failed ping, and do not change mode-detection code without evidence of a native bug.
+
+Timeout diagnostics identify the observed stage:
+
+| `phase` | What is known |
+|---|---|
+| `session_resolve` | The target socket was not available; the requested command was not sent. |
+| `editor_readiness` | A main-thread ping did not answer within its budget; the requested command was not sent. This does not establish Play Mode or a dead Editor. |
+| `transport_send` | Sending the request exceeded its deadline; a partial send may have happened. |
+| `command_response` | The server did not receive the result before the deadline; Editor queue/execution state is unknown. |
+| `editor_queue` | The native dispatcher canceled this command before execution; a later Editor update cannot execute it. |
+| `editor_execution` | Native dispatch had started; effects may already exist. |
+| `transport_unknown` | A transport error did not establish the execution outcome. |
+
+Native cancellation replies include elapsed time, queue wait, and an observation timestamp.
+The server also logs command/session IDs and elapsed time for replies taking at least two seconds.
+Read-only status can be observed again. For mutations with `execution_may_have_started=true` or
+`hint="check_state_before_retry"`, inspect the resulting state or accepted job ID before issuing
+another command. The HTTP PluginHub path does not automatically replay a command after dispatch.
+
+An unfocused or reloading Editor can delay its update loop; memory pressure can add latency.
+These are possible contributors, not diagnoses from a timeout alone. Background transport work
+posts execution to the captured Unity main context; it never runs Unity API work as a fallback
+when that context is unavailable.
+
 ## macOS: Claude CLI fails to start (dyld ICU library not loaded)
 
 **Symptoms:**

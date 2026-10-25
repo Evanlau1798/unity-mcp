@@ -8,6 +8,12 @@ class NoUnitySessionError(RuntimeError):
     """Raised when no Unity plugins are available."""
 
 
+class CommandDeadlineError(TimeoutError):
+    def __init__(self, command: str, diagnostics: dict):
+        self.diagnostics = diagnostics
+        super().__init__(f"Unity '{command}' deadline exceeded during {diagnostics['phase']}; execution outcome unknown")
+
+
 class InstanceSelectionRequiredError(RuntimeError):
     """Raised when the caller must explicitly select a Unity instance."""
 
