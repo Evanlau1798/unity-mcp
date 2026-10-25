@@ -55,6 +55,8 @@ class PluginRegistry:
         unity_version: str,
         project_path: str | None = None,
         user_id: str | None = None,
+        editor_pid: int | None = None,
+        editor_started_ms: int | None = None,
     ) -> tuple[PluginSession, str | None]:
         """Register (or replace) a plugin session.
 
@@ -102,6 +104,9 @@ class PluginRegistry:
                 self._hash_to_session[project_hash] = session_id
 
             self._sessions[session_id] = session
+            from transport.managed_lifetime import active_lifetime
+            if active_lifetime is not None and not config.http_remote_hosted:
+                active_lifetime.remember_owner(editor_pid, editor_started_ms)
             return session, evicted_session_id
 
     async def touch(self, session_id: str) -> None:
