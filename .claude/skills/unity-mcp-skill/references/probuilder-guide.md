@@ -2,9 +2,11 @@
 
 Patterns and best practices for AI-driven ProBuilder mesh editing through MCP for Unity.
 
+All examples are **templates**, not results of a live run. Object names, dimensions and numeric face/edge indices must be adapted to the inspected mesh. See the [tool actions](tools-physics-probuilder.md#probuilder-tools) for the command catalog.
+
 ## Availability
 
-ProBuilder is an **optional** Unity package (`com.unity.probuilder`). Check `mcpforunity://project/info` or call `manage_probuilder(action="ping")` to verify it's installed before using any ProBuilder tools. If available, **prefer ProBuilder over primitive GameObjects** for any geometry that needs editing, multi-material faces, or non-trivial shapes.
+ProBuilder is an **optional** Unity package (`com.unity.probuilder`). For live modeling, use `manage_probuilder(action="ping")` or installed-package information to establish availability; the project-info resource does not promise a ProBuilder flag. If the tool is hidden, inspect and enable the `probuilder` group. Prefer ProBuilder when editable geometry, per-face materials or more complex shapes serve the requested result.
 
 ## Core Workflow: Always Get Info First
 
@@ -32,9 +34,9 @@ manage_probuilder(action="extrude_faces", target="MyCube",
 | Value | Returns | Use When |
 |-------|---------|----------|
 | `"summary"` | Counts, bounds, materials | Quick check / validation |
-| `"faces"` | + normals, centers, directions | Selecting faces for editing |
+| `"faces"` | + normals, centers, directions (max 100 faces) | Selecting faces for editing |
 | `"edges"` | + edge vertex pairs with world positions (max 200) | Edge-based operations |
-| `"all"` | Everything | Full mesh analysis |
+| `"all"` | All supported detail categories, with the same face/edge caps | Combined mesh inspection |
 
 ## Shape Creation
 
@@ -223,20 +225,20 @@ manage_probuilder(action="set_smoothing", target="MyMesh",
 
 ## Mesh Cleanup Pattern
 
-After editing, always clean up:
+After editing, inspect mesh health. Change the pivot, bake transforms or repair geometry only when the intended result requires it; those operations can affect later placement and editing.
 
 ```python
-# 1. Center the pivot (important after extrusions that shift geometry)
+# 1. Optional: center the pivot if this is the intended pivot location
 manage_probuilder(action="center_pivot", target="MyMesh")
 
-# 2. Optionally freeze transform if you moved/rotated the object
+# 2. Optional: freeze transform only when baking it into the mesh is intended
 manage_probuilder(action="freeze_transform", target="MyMesh")
 
 # 3. Validate mesh health
 result = manage_probuilder(action="validate_mesh", target="MyMesh")
-# Check result.data.healthy -- if false, repair
+# Inspect the returned diagnostics before deciding whether to repair
 
-# 4. Auto-repair if needed
+# 4. Apply repair only for diagnosed issues that it addresses
 manage_probuilder(action="repair_mesh", target="MyMesh")
 ```
 
@@ -302,7 +304,7 @@ manage_probuilder(action="auto_smooth", target="House",
 # 9. Assign materials per face
 manage_probuilder(action="set_face_material", target="House",
     properties={"faceIndices": [0, 1, 2, 3], "materialPath": "Assets/Materials/Brick.mat"})
-# A Prism's faces 1 and 3 are its two slopes
+# Template indices only: inspect the Prism to identify its two slopes
 manage_probuilder(action="set_face_material", target="Roof",
     properties={"faceIndices": [1, 3], "materialPath": "Assets/Materials/Roof.mat"})
 
@@ -398,7 +400,7 @@ manage_probuilder(action="set_face_material", target="Ring",
 
 ## Batch Patterns
 
-Use `batch_execute` for multi-step workflows to reduce round-trips:
+Use `batch_execute` for compatible native commands to reduce round trips. Execution is sequential on Unity's main thread, with no rollback; inspect each result before dependent edits. See [batch contract and limits](tools-infrastructure-editor.md#batch_execute).
 
 ```python
 batch_execute(commands=[
@@ -419,9 +421,11 @@ batch_execute(commands=[
 
 ## Known Limitations
 
-### Not Yet Working
+<a id="not-yet-working"></a>
 
-These actions exist in the API but have known bugs that prevent them from working correctly:
+### Reported Compatibility Issues
+
+Earlier guide notes reported the following issues. This documentation update did not execute these actions or establish which installed ProBuilder versions still exhibit them. Inspect the current result before relying on either action; the alternatives remain useful.
 
 | Action | Issue | Workaround |
 |--------|-------|------------|
@@ -440,7 +444,7 @@ These actions exist in the API but have known bugs that prevent them from workin
 1. **Always get_mesh_info before editing** -- face indices are not stable across edits
 2. **Re-query after modifications** -- subdivide, extrude, delete all change face indices
 3. **Use direction labels** -- don't guess face indices, use the direction field
-4. **Cleanup after editing** -- center_pivot + validate is good practice
+4. **Inspect after editing** -- validate mesh health; center the pivot or freeze transforms only when intended
 5. **Auto-smooth for organic shapes** -- 30 degrees is a good default
 6. **Prefer ProBuilder over primitives** -- when the package is available and you need editable geometry
 7. **Use batch_execute** -- for creating multiple shapes or repetitive operations
