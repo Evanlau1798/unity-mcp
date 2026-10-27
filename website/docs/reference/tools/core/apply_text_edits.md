@@ -8,14 +8,14 @@ description: "Apply small text edits to a C# script identified by URI."
 
 > **Auto-generated** from the Python tool registry. Do not hand-edit outside `<!-- examples:start --><!-- examples:end -->` blocks — the generator (`tools/generate_docs_reference.py`) will overwrite them.
 
-**Group:** `core` &nbsp;·&nbsp; **Module:** `services.tools.manage_script`
+**Group:** `core` &nbsp;·&nbsp; **Module:** `services.tools.script_text_edits`
 
 ## Description
 
 Apply small text edits to a C# script identified by URI.
     IMPORTANT: This tool replaces EXACT character positions. Always verify content at target lines/columns BEFORE editing!
     RECOMMENDED WORKFLOW:
-        1. First call resources/read with start_line/line_count to verify exact content
+        1. Read current contents with manage_script(action='read', name=..., path=...) or locate lines with find_in_file
         2. Count columns carefully (or use find_in_file to locate patterns)
         3. Apply your edit with precise coordinates
         4. Consider script_apply_edits with anchors for safer pattern-based replacements

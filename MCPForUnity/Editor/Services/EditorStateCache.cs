@@ -321,6 +321,10 @@ namespace MCPForUnity.Editor.Services
                 // which prevents unnecessary _cached rebuilds, not from caching the clone.
                 var clone = (JObject)_cached.DeepClone();
 
+                // Settings can change without a tracked editor signal or snapshot rebuild.
+                if (clone["settings"] is JObject settings)
+                    settings["batch_execute_max_commands"] = Tools.BatchExecute.GetMaxCommandsPerBatch();
+
                 // Ownership can change before the next cache tick, including an orphan
                 // restored without a known mode. It must never appear ready in that gap.
                 string currentJobId = TestJobManager.CurrentJobId;

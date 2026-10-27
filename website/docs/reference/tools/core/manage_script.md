@@ -36,7 +36,7 @@ A `dict` containing the Unity response. The exact shape depends on the action.
 `manage_script` only handles whole-file lifecycle: **create**, **read**, **delete**. For editing existing scripts, reach for:
 - **[`script_apply_edits`](./script_apply_edits)** — structured edits (replace method, insert method, anchor-based insert/replace) with balanced-brace guards. Use this for most code changes.
 - **[`apply_text_edits`](./apply_text_edits)** — raw line/column text edits with optional SHA precondition. Use for surgical text patches.
-- **[`validate_script`](./validate_script)** — Roslyn-based validation (structural or full semantic).
+- **[`validate_script`](./validate_script)** — `basic` or `standard` validation; Roslyn syntax checks at `standard` require `USE_ROSLYN` and the optional DLLs.
 - **[`read_console`](./read_console)** — fetch compile diagnostics after any change.
 :::
 
@@ -68,7 +68,7 @@ A `dict` containing the Unity response. The exact shape depends on the action.
 }
 ```
 
-Returns the full file. For just a SHA (to detect drift between reads and writes), use [`get_sha`](./get_sha) instead — it's cheaper.
+Returns the full file; there is no general-purpose file resource. Use [`find_in_file`](./find_in_file) for matching lines. For just a SHA (to detect drift between reads and writes), use [`get_sha`](./get_sha) instead — it's cheaper.
 
 ### Delete a script
 
@@ -84,6 +84,6 @@ Returns the full file. For just a SHA (to detect drift between reads and writes)
 
 ### After every create / delete
 
-Unity needs a domain reload to compile the new file (or notice the old one is gone). Poll the `mcpforunity://editor/state` resource until `data.compilation.is_compiling` flips back to `false`, then run [`read_console`](./read_console) to catch any compile errors before relying on the new types.
+The script mutation wrapper waits for editor readiness and can verify the affected source after a disconnect. Keep the script path and returned source identity when checking the result. In editor state v2, inspect `data.compilation`, `data.assets.refresh`, `data.tests`, `data.advice.ready_for_tools` and `data.staleness`; `is_compiling: false` alone does not prove this change finished. If a refresh returns an operation ID, observe that same [`refresh_unity`](./refresh_unity) operation to completion. Do not blindly force another refresh after an import or refresh. Read [`read_console`](./read_console) for compile errors before relying on the new types.
 <!-- examples:end -->
 

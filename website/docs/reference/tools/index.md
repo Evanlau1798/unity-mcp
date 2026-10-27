@@ -29,7 +29,7 @@ AI asset generation – 3D model gen/import, 2D image gen & audio gen (bring-you
 ## `core` &nbsp; (30 tools)
 Essential scene, script, asset & editor tools (always on by default)
 - **[`apply_text_edits`](./core/apply_text_edits.md)** — Apply small text edits to a C# script identified by URI.
-- **[`batch_execute`](./core/batch_execute.md)** — Executes multiple MCP commands in a single batch for dramatically better performance.
+- **[`batch_execute`](./core/batch_execute.md)** — Executes native Unity commands sequentially on the Editor main thread in one request.
 - **[`create_script`](./core/create_script.md)** — Create a new C# script at the given project path.
 - **[`debug_request_context`](./core/debug_request_context.md)** — Return the current FastMCP request context details (client_id, session_id, and meta dump).
 - **[`delete_script`](./core/delete_script.md)** — Delete a C# script by URI or Assets-relative path.
@@ -57,7 +57,7 @@ Essential scene, script, asset & editor tools (always on by default)
 - **[`refresh_unity`](./core/refresh_unity.md)** — Request a tracked Unity refresh and optionally compilation.
 - **[`script_apply_edits`](./core/script_apply_edits.md)** — Structured C# edits (methods/classes) with safer boundaries - prefer this over raw text.
 - **[`set_active_instance`](./core/set_active_instance.md)** — Set the active Unity instance for this client/session.
-- **[`validate_script`](./core/validate_script.md)** — Validate a C# script and return diagnostics.
+- **[`validate_script`](./core/validate_script.md)** — Validate a C# script and return diagnostics (basic or standard).
 
 ## `docs` &nbsp; (2 tools)
 Unity API reflection and documentation lookup
@@ -77,9 +77,10 @@ ScriptableObject management
 - **[`execute_code`](./scripting_ext/execute_code.md)** — Execute arbitrary C# code inside the Unity Editor.
 - **[`manage_scriptable_object`](./scripting_ext/manage_scriptable_object.md)** — Creates and modifies ScriptableObject assets using Unity SerializedObject property paths.
 
-## `testing` &nbsp; (2 tools)
+## `testing` &nbsp; (3 tools)
 Test runner & async test jobs
 - **[`get_test_job`](./testing/get_test_job.md)** — Polls an async Unity test job by job_id.
+- **[`list_tests`](./testing/list_tests.md)** — Lists Unity tests without executing them.
 - **[`run_tests`](./testing/run_tests.md)** — Starts a Unity test run asynchronously and returns a job_id immediately.
 
 ## `ui` &nbsp; (1 tool)

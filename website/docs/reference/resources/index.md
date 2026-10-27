@@ -130,7 +130,7 @@ URI: mcpforunity://scene/gameobject/{instance_id}/components
 
 **URI:** `mcpforunity://tests`
 
-Provides the first page of Unity tests (default 50 items). For filtering or pagination, use the run_tests tool instead.
+Provides the first page of Unity tests (default 50 items). For filtering or pagination, use the read-only list_tests tool.
 
 URI: mcpforunity://tests
 
@@ -139,7 +139,7 @@ URI: mcpforunity://tests
 
 **URI:** `mcpforunity://tests/{mode}`
 
-Provides the first page of tests for a specific mode (EditMode or PlayMode). For filtering or pagination, use the run_tests tool instead.
+Provides the first page of tests for a specific mode (EditMode or PlayMode). For filtering or pagination, use the read-only list_tests tool.
 
 URI: mcpforunity://tests/{mode}
 

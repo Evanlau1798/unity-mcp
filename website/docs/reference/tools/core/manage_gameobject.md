@@ -81,7 +81,7 @@ Pair with [`manage_material`](./manage_material) to make it actually red.
 }
 ```
 
-`search_method: by_name` matches the first GameObject whose name equals `Player`. Use `by_path` for `Parent/Child/Leaf` lookups or `by_id` for instance IDs.
+`search_method: by_name` matches the first GameObject whose name equals `Player`. Use `by_path` for `Parent/Child/Leaf` lookups or `by_id` for instance IDs. These default lookups exclude inactive objects.
 
 ### Parent one GameObject under another
 
@@ -96,9 +96,9 @@ Pair with [`manage_material`](./manage_material) to make it actually red.
 }
 ```
 
-### Delete every GameObject tagged `Cleanup`
+### Delete active GameObjects tagged `Cleanup`
 
-> Delete all objects tagged `Cleanup` in the current scene.
+> Delete active objects tagged `Cleanup` in the current scene.
 
 ```json
 {
@@ -108,19 +108,21 @@ Pair with [`manage_material`](./manage_material) to make it actually red.
 }
 ```
 
+Deletion uses `DestroyImmediate` and cannot be undone. The delete resolver excludes inactive objects by default; finding an inactive object's ID through another tool does not make it deletable through this resolver.
+
 ### Multi-instance routing
 
-> In the `Editor2` instance, duplicate `MainCamera`.
+> In the instance identified by `Editor2@a1b2c3d4`, duplicate `MainCamera`.
 
 ```json
 {
   "action": "duplicate",
   "target": "MainCamera",
   "search_method": "by_name",
-  "unity_instance": "Editor2"
+  "unity_instance": "Editor2@a1b2c3d4"
 }
 ```
 
-See [Multi-Instance Routing](/guides/multi-instance) for the full routing model.
+Copy the exact instance identifier from `mcpforunity://instances`. See [Multi-Instance Routing](/guides/multi-instance) for the full routing model.
 <!-- examples:end -->
 

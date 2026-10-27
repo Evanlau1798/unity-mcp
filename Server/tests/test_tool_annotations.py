@@ -35,6 +35,7 @@ READ_ONLY = {
     "find_in_file",
     "get_sha",
     "get_test_job",
+    "list_tests",  # Native discovery only; no refresh/preflight or test execution.
     "manage_script_capabilities",
     "unity_docs",
     "unity_reflect",

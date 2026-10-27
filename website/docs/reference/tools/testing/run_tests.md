@@ -25,7 +25,7 @@ Starts a Unity test run asynchronously and returns a job_id immediately. Poll wi
 | `assembly_names` | `list[str] \| str \| None` | — | Assembly names to filter tests by |
 | `include_failed_tests` | `bool` | — | Include details for failed/skipped tests only (default: false) |
 | `include_details` | `bool` | — | Include details for all tests (default: false) |
-| `init_timeout` | `int \| None` | — | Initialization timeout in milliseconds. PlayMode tests may need longer due to domain reload (default: 15000). Recommended: 120000 for PlayMode. |
+| `init_timeout` | `int \| None` | — | Initialization timeout in milliseconds. PlayMode tests may need longer during initialization (default: 15000). PlayMode temporarily disables domain reload, preserves the original scene-reload option, then restores both settings. Other operations may still trigger a reload; EditMode is unaffected by this helper. |
 | `clear_stuck` | `bool` | — | Release an orphaned job only after Unity positively confirms native cleanup. Active or unknown native ownership is retained; this does not start a run. |
 
 ## Returns
@@ -46,7 +46,7 @@ A `dict` containing the Unity response. The exact shape depends on the action.
 }
 ```
 
-Returns immediately with a `job_id` and `status: "running"`. Poll it with [`get_test_job`](./get_test_job.md) — the results are not in this response.
+Returns immediately with `data.job_id` and `data.status: "running"`. Poll that job with [`get_test_job`](./get_test_job.md). Observe `data.status` until `succeeded`, `failed` or `cancelled`, then read `data.result.summary` and the requested `data.result.results` pages. A wait timeout does not cancel the job. Continue observing the same job until `data.native_cleanup_pending` and `data.native_ownership_retained` are both false before another mutation.
 
 ### Run specific tests by full name
 
@@ -87,7 +87,7 @@ Each `group_names` entry is a regular expression matched against the full test n
 }
 ```
 
-PlayMode runs start with a domain reload, so the default 15 s `init_timeout` is often too short. 120000 ms is the recommended value.
+For PlayMode only, the helper temporarily enables Enter Play Mode Options with `DisableDomainReload`, preserves the original scene reload flag and restores the original settings afterward. This does not suppress reloads caused by other workflows. A 120000 ms `init_timeout` allows more time for PlayMode initialization; EditMode does not use this helper.
 
 ### Unblock a run lost to a domain reload
 

@@ -75,7 +75,7 @@ Unity keeps in `Library/PackageCache`.
 
 ### Get the scene hierarchy (paged)
 
-> List every GameObject in the active scene.
+> List the root GameObjects in the active scene.
 
 ```json
 {
@@ -84,7 +84,7 @@ Unity keeps in `Library/PackageCache`.
 }
 ```
 
-Returns up to `page_size` entries plus a `next_cursor` for the remainder. Always page large hierarchies.
+Returns up to `page_size` roots plus a `next_cursor` for the remainder. To explore a root, call `get_hierarchy` with its `parent` ID and page its direct children, repeating for deeper levels as needed. Each call returns one level; `max_depth` is accepted for compatibility and does not recursively expand the hierarchy.
 
 ### Save the active scene
 

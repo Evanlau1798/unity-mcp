@@ -214,9 +214,11 @@ uv run python -m cli.main editor tests --failed-only
 
 ```
 run_tests(mode="EditMode")
-run_tests(mode="PlayMode", init_timeout=120000)  # PlayMode may need longer init due to domain reload
+run_tests(mode="PlayMode", init_timeout=120000)  # Allow longer PlayMode initialization
 get_test_job(job_id="<id>", wait_timeout=60)
 ```
+
+Use `data.job_id` from the launch response. Continue polling the same job after an observation timeout, and wait for native cleanup and ownership to clear before another mutation. The PlayMode helper temporarily disables domain reload while preserving the original scene reload flag, then restores the original settings; EditMode does not use this helper.
 
 ### Local headless test harness
 

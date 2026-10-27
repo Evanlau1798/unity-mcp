@@ -1,7 +1,7 @@
 ---
 title: validate_script
 sidebar_label: validate_script
-description: "Validate a C# script and return diagnostics."
+description: "Validate a C# script and return diagnostics (basic or standard)."
 ---
 
 # `validate_script`
@@ -12,7 +12,7 @@ description: "Validate a C# script and return diagnostics."
 
 ## Description
 
-Validate a C# script and return diagnostics.
+Validate a C# script and return diagnostics (basic or standard). Roslyn-based checks require a Unity package compiled with USE_ROSLYN; semantic validation is conditional.
 
 ## Parameters
 

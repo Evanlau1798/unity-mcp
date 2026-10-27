@@ -101,9 +101,9 @@ Prefer this over [`apply_text_edits`](./apply_text_edits) for method-level chang
 }
 ```
 
-`path` ends with `/`. `validate: 'standard'` runs Roslyn structural checks before the write commits; use `'basic'` for cheap interior-only checks when you're touching a method body and trust the signature.
+`path` ends with `/`. `validate: 'standard'` performs structural and Unity-specific checks, with Roslyn syntax checks when compiled with `USE_ROSLYN` and the required DLLs. Use `'basic'` for basic structural checks; neither public level promises full semantic validation.
 
-### Insert a new method at the end of a class
+### Insert a new method after another method
 
 > Add a `Reset()` method after `Update` in `PlayerController`.
 
@@ -115,7 +115,7 @@ Prefer this over [`apply_text_edits`](./apply_text_edits) for method-level chang
     {
       "op": "insert_method",
       "className": "PlayerController",
-      "methodName": "Update",
+      "afterMethodName": "Update",
       "position": "after",
       "replacement": "void Reset() { currentTarget = null; }"
     }
@@ -123,7 +123,7 @@ Prefer this over [`apply_text_edits`](./apply_text_edits) for method-level chang
 }
 ```
 
-`position`: `start | end | before | after`. With `before`/`after`, `methodName` is the anchor; with `start`/`end`, it's the position within the class body.
+`position`: `start | end | before | after`. The Python wrapper requires `beforeMethodName` with `before` and `afterMethodName` with `after`; `methodName` is not the insertion anchor. The current native handler only implements method anchoring for `after`; `before` falls through to class-end insertion. Use `after` or a newline-safe anchor operation when placement matters. `start`/`end` select the position within the class body.
 
 ### Delete a method
 
@@ -152,13 +152,13 @@ Prefer this over [`apply_text_edits`](./apply_text_edits) for method-level chang
       "op": "anchor_insert",
       "anchor": "//\\s*---\\s*input\\s*---",
       "position": "after",
-      "replacement": "    Debug.Log(\"input frame\");"
+      "text": "\n    Debug.Log(\"input frame\");\n"
     }
   ]
 }
 ```
 
-Anchor ops are great for adding instrumentation near stable comment markers without locking into exact line numbers. The anchor is a regex; escape literal characters.
+The anchor is a regex; escape literal characters. This marker does not consume its line ending, so `text` starts with a newline to keep the inserted statement outside the comment and ends with a newline to preserve the following code.
 
 ### Apply several edits atomically
 
@@ -181,6 +181,6 @@ Anchor ops are great for adding instrumentation near stable comment markers with
 
 ### After every edit
 
-Poll the `mcpforunity://editor/state` resource until `data.compilation.is_compiling` flips back to `false`, then run [`read_console`](./read_console) to catch any compile errors before relying on the new types.
+The script mutation wrapper waits for editor readiness and can verify the affected source after a disconnect. Retain the script path and returned source identity. In editor state v2, inspect `data.compilation`, `data.assets.refresh`, `data.tests`, `data.advice.ready_for_tools` and `data.staleness`; `is_compiling: false` alone does not prove this edit completed. If a refresh returns an operation ID, observe that same [`refresh_unity`](./refresh_unity) operation instead of starting another refresh. Read [`read_console`](./read_console) for compile errors before relying on the new types.
 <!-- examples:end -->
 

@@ -20,19 +20,11 @@ DEFAULT_MAX_COMMANDS_PER_BATCH = 25
 # Hard ceiling matching the C# AbsoluteMaxCommandsPerBatch.
 ABSOLUTE_MAX_COMMANDS_PER_BATCH = 100
 
-# Module-level cache for the Unity-configured limit (populated from editor state).
-_cached_max_commands: int | None = None
-
-
 async def _get_max_commands_from_editor_state(ctx: Context) -> int:
     """
     Attempt to read the configured batch limit from the Unity editor state.
     Falls back to DEFAULT_MAX_COMMANDS_PER_BATCH if unavailable.
     """
-    global _cached_max_commands
-    if _cached_max_commands is not None:
-        return _cached_max_commands
-
     try:
         from services.resources.editor_state import get_editor_state
 
@@ -45,7 +37,6 @@ async def _get_max_commands_from_editor_state(ctx: Context) -> int:
             if isinstance(settings, dict):
                 limit = settings.get("batch_execute_max_commands")
                 if isinstance(limit, int) and 1 <= limit <= ABSOLUTE_MAX_COMMANDS_PER_BATCH:
-                    _cached_max_commands = limit
                     return limit
     except Exception as exc:
         logger.debug("Could not read batch limit from editor state: %s", exc)
@@ -53,21 +44,15 @@ async def _get_max_commands_from_editor_state(ctx: Context) -> int:
     return DEFAULT_MAX_COMMANDS_PER_BATCH
 
 
-def invalidate_cached_max_commands() -> None:
-    """Reset the cached limit so the next call re-reads from editor state."""
-    global _cached_max_commands
-    _cached_max_commands = None
-
-
 @mcp_for_unity_tool(
     name="batch_execute",
     description=(
-        "Executes multiple MCP commands in a single batch for dramatically better performance. "
-        "STRONGLY RECOMMENDED when creating/modifying multiple objects, adding components to multiple targets, "
-        "or performing any repetitive operations. Reduces latency and token costs by 10-100x compared to "
-        "sequential tool calls. The max commands per batch is configurable in the Unity MCP Tools window "
-        f"(default {DEFAULT_MAX_COMMANDS_PER_BATCH}, hard max {ABSOLUTE_MAX_COMMANDS_PER_BATCH}). "
-        "Example: creating 5 cubes → use 1 batch_execute with 5 create commands instead of 5 separate calls."
+        "Executes native Unity commands sequentially on the Editor main thread in one request. "
+        "Only native command handlers are dispatched; Python tool wrapper encoding, preflight and recovery "
+        "do not run per command. Non-transactional: no rollback; inspect partial results before retrying. "
+        "Only top-level parameter keys are normalized; nested property keys are preserved. "
+        "The current Editor limit is read each call: default 25, configurable 1–100, hard maximum 100. "
+        "fail_fast defaults to false. parallel is accepted for compatibility but parallelApplied is false."
     ),
     annotations=ToolAnnotations(
         title="Batch Execute",
@@ -78,11 +63,11 @@ async def batch_execute(
     ctx: Context,
     commands: Annotated[list[dict[str, Any]], "List of commands with 'tool' and 'params' keys."],
     parallel: Annotated[bool | None,
-                        "Attempt to run read-only commands in parallel"] = None,
+                        "Compatibility hint only; native commands run sequentially (parallelApplied=false)"] = None,
     fail_fast: Annotated[bool | None,
-                         "Stop processing after the first failure"] = None,
+                         "Stop processing after the first failure (default false); earlier effects remain"] = None,
     max_parallelism: Annotated[int | None,
-                               "Hint for the maximum number of parallel workers"] = None,
+                               "Compatibility hint; no parallel workers are used"] = None,
 ) -> dict[str, Any]:
     """Proxy the batch_execute tool to the Unity Editor transporter."""
     unity_instance = await get_unity_instance_from_context(ctx)

@@ -3,12 +3,12 @@ id: roslyn
 slug: /guides/roslyn
 title: Roslyn Script Validation (Advanced)
 sidebar_label: Roslyn Validation
-description: Enable strict C# validation that catches undefined namespaces, types, and methods before the script reaches the Unity compiler.
+description: Enable optional Roslyn syntax validation and understand the limits of public script validation levels.
 ---
 
 # Roslyn Script Validation
 
-By default, MCP for Unity uses a fast structural validator for scripts the LLM generates. For **strict** validation that catches undefined namespaces, types, and methods at write time — without a full Unity compile — install the optional Roslyn DLLs.
+By default, MCP for Unity uses a fast structural validator for scripts the LLM generates. With the optional Roslyn DLLs and `USE_ROSLYN` defined, `standard` validation also checks C# syntax through Roslyn. The public `validate_script` tool accepts only `basic` and `standard`; neither level performs full semantic compilation.
 
 Most users don't need this. Enable it when:
 
@@ -47,7 +47,7 @@ You can also trigger it from the menu: **Window → MCP for Unity → Install Ro
 
 ## Verifying it's active
 
-After restart, the MCP for Unity status panel shows **Roslyn: enabled** under the Scripts section. The `validate_script` tool now performs full semantic analysis rather than the structural pass.
+After restart, verify that `USE_ROSLYN` is defined and the Roslyn assemblies loaded without compiler errors. Call `validate_script` with `level: "standard"` to include Roslyn syntax checks. Full semantic analysis belongs to the native `Strict` validation level, requires `USE_ROSLYN` and usable compilation references, and is not a public `validate_script` level. Read Unity's compile diagnostics before relying on namespace, type or method resolution.
 
 ## Disabling
 

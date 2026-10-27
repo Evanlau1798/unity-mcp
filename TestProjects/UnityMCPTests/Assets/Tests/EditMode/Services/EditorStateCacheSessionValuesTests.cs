@@ -43,5 +43,35 @@ namespace MCPForUnityTests.Editor.Services
 
             Assert.IsNull(EditorStateCache.GetSessionUnixMs(Key));
         }
+
+        [TestCase(25, 100, 100)]
+        [TestCase(100, 25, 25)]
+        [TestCase(25, 250, 100)]
+        [TestCase(25, 0, 1)]
+        public void BatchLimit_ReadObservesChangedSettingWithoutRebuildingIdleSnapshot(int initial, int changed, int expected)
+        {
+            const string setting = "MCPForUnity.BatchExecute.MaxCommands";
+            bool existed = EditorPrefs.HasKey(setting);
+            int original = EditorPrefs.GetInt(setting, 25);
+            try
+            {
+                EditorPrefs.SetInt(setting, initial);
+                typeof(EditorStateCache).GetMethod("ForceUpdate", System.Reflection.BindingFlags.Static
+                    | System.Reflection.BindingFlags.NonPublic).Invoke(null, new object[] { "test_initial_setting" });
+                var before = EditorStateCache.GetSnapshot();
+                Assert.AreEqual(initial, (int)before["settings"]["batch_execute_max_commands"]);
+                EditorPrefs.SetInt(setting, changed);
+                var after = EditorStateCache.GetSnapshot();
+
+                Assert.AreEqual(expected, (int)after["settings"]["batch_execute_max_commands"]);
+                Assert.AreEqual((long)before["sequence"], (long)after["sequence"],
+                    "A setting read should not require a full scene/JSON snapshot rebuild.");
+            }
+            finally
+            {
+                if (existed) EditorPrefs.SetInt(setting, original);
+                else EditorPrefs.DeleteKey(setting);
+            }
+        }
     }
 }

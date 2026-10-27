@@ -54,7 +54,7 @@ The original `/mcp` URL retains session selection and per-call routing:
 set_active_instance(instance="MyGame@a1b2c3d4")
 ```
 
-Once set, **every subsequent tool call** in the session routes to that instance until you change it. This is the most common pattern: choose once, then prompt normally.
+Once set on the original `/mcp` endpoint, subsequent calls use that session default unless a per-call `unity_instance` overrides it. An instance-bound endpoint retains its fixed target and rejects conflicts.
 
 You can also use:
 
@@ -85,7 +85,7 @@ The server accepts the same value formats as `set_active_instance`: `Name@hash`,
 - **HTTP**: instance state is keyed by the MCP session (`MCP-Session-Id`), so two MCP clients can target different Editors at the same time on the same Python server.
 - **Stdio**: port-number shorthand works because there's a separate Python process per client, and the session key is a per-subprocess UUID. HTTP shares one process and uses `Name@hash` exclusively.
 
-The session is the *only* key. It is deliberately not the client id — see the routing contract for why.
+For legacy `/mcp` session selection, the pin is keyed only by the MCP session, never by client ID. Overall routing uses a per-call target, then the bound endpoint, then the session default or single-Editor auto-selection; a bound endpoint rejects conflicting targets. See the routing contract for details.
 
 Per-call targets are request-scoped, so parallel calls within one session can target different
 Editors without overwriting each other or changing the session default. The local CLI HTTP routes

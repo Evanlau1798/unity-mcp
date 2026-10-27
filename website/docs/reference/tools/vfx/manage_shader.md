@@ -19,8 +19,8 @@ Manages shader scripts in Unity (create, read, update, delete). Read-only action
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `action` | `Literal['create', 'read', 'update', 'delete']` | yes | Perform CRUD operations on shader scripts. |
-| `name` | `str` | yes | Shader name (no .cs extension) |
-| `path` | `str` | yes | Asset path (default: "Assets/") |
+| `name` | `str` | yes | Shader name (no .shader extension) |
+| `path` | `str` | yes | Required asset directory under Assets/ (for example Assets/Shaders) |
 | `contents` | `str \| None` | — | Shader code for 'create'/'update' |
 
 ## Returns

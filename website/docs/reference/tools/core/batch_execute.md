@@ -1,7 +1,7 @@
 ---
 title: batch_execute
 sidebar_label: batch_execute
-description: "Executes multiple MCP commands in a single batch for dramatically better performance."
+description: "Executes native Unity commands sequentially on the Editor main thread in one request."
 ---
 
 # `batch_execute`
@@ -12,16 +12,16 @@ description: "Executes multiple MCP commands in a single batch for dramatically 
 
 ## Description
 
-Executes multiple MCP commands in a single batch for dramatically better performance. STRONGLY RECOMMENDED when creating/modifying multiple objects, adding components to multiple targets, or performing any repetitive operations. Reduces latency and token costs by 10-100x compared to sequential tool calls. The max commands per batch is configurable in the Unity MCP Tools window (default 25, hard max 100). Example: creating 5 cubes → use 1 batch_execute with 5 create commands instead of 5 separate calls.
+Executes native Unity commands sequentially on the Editor main thread in one request. Only native command handlers are dispatched; Python tool wrapper encoding, preflight and recovery do not run per command. Non-transactional: no rollback; inspect partial results before retrying. Only top-level parameter keys are normalized; nested property keys are preserved. The current Editor limit is read each call: default 25, configurable 1–100, hard maximum 100. fail_fast defaults to false. parallel is accepted for compatibility but parallelApplied is false.
 
 ## Parameters
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `commands` | `list[dict[str, Any]]` | yes | List of commands with 'tool' and 'params' keys. |
-| `parallel` | `bool \| None` | — | Attempt to run read-only commands in parallel |
-| `fail_fast` | `bool \| None` | — | Stop processing after the first failure |
-| `max_parallelism` | `int \| None` | — | Hint for the maximum number of parallel workers |
+| `parallel` | `bool \| None` | — | Compatibility hint only; native commands run sequentially (parallelApplied=false) |
+| `fail_fast` | `bool \| None` | — | Stop processing after the first failure (default false); earlier effects remain |
+| `max_parallelism` | `int \| None` | — | Compatibility hint; no parallel workers are used |
 
 ## Returns
 
@@ -32,7 +32,7 @@ A `dict` containing the Unity response. The exact shape depends on the action.
 <!-- examples:start -->
 ### Why batch?
 
-A loop of 10 individual `manage_gameobject` calls pays 10 round trips to Unity. `batch_execute` pays one. For multi-object setup, batches are routinely **10–100× faster**. Use them whenever the next call doesn't need the previous call's return value.
+A batch groups multiple native Unity commands into one dispatch, reducing per-call overhead. Use it when the next command doesn't need a previous command's return value; actual performance depends on the work Unity performs.
 
 ### Spawn three colored cubes in one round trip
 
@@ -81,20 +81,20 @@ A loop of 10 individual `manage_gameobject` calls pays 10 round trips to Unity. 
 }
 ```
 
-### Mix tools freely
+### Mix native commands
 
-A batch can mix any tools, as long as ordering inside the batch doesn't depend on a previous call's *return value*. If you need the response of step N to feed step N+1, split into two batches.
+A batch can mix registered native commands. It does not call the individual Python tool wrappers, so their parameter encoding, preflight and recovery logic do not run. Only top-level parameter keys are normalized; nested property keys are preserved. Keep script mutations and other operations that require wrapper handling in their dedicated tools. If step N's response must feed step N+1, split the calls.
 
 ### Stop on first failure vs continue
 
-Set `fail_fast: true` (default) to abort the rest on the first failed step. Pass `fail_fast: false` to attempt every operation and collect per-step results, useful for "best-effort cleanup" patterns.
+`fail_fast` defaults to `false`: every command is attempted and per-command results are collected. Set `fail_fast: true` to stop after the first failure. A batch is not a transaction and has no rollback: earlier successful changes remain applied. Inspect `data.results` and each `callSucceeded` before deciding what to do next, including when the overall response reports failure.
 
-### Parallel reads
+### Execution order
 
-Pass `parallel: true` to let the server run **read-only** commands concurrently. Mutating ops still serialize for safety. Tune with `max_parallelism`.
+All commands run sequentially on Unity's main thread, including reads. `parallel` and `max_parallelism` are accepted compatibility hints; `data.parallelApplied` is always `false`.
 
 ### Limits
 
-Batch size is configurable in the Unity MCP Tools window (default 25, hard max 100). Past the limit, split into multiple batches — round-trip cost is still amortized.
+Batch size is configurable from 1–100 in the Unity MCP Tools window (default 25, hard max 100). Past the current limit, split into multiple batches. Route the whole batch with the outer `unity_instance`; per-command instance routing is rejected.
 <!-- examples:end -->
 

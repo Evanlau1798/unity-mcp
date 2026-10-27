@@ -22,8 +22,8 @@ from transport.legacy.unity_connection import async_send_command_with_retry
 async def manage_shader(
     ctx: Context,
     action: Annotated[Literal['create', 'read', 'update', 'delete'], "Perform CRUD operations on shader scripts."],
-    name: Annotated[str, "Shader name (no .cs extension)"],
-    path: Annotated[str, "Asset path (default: \"Assets/\")"],
+    name: Annotated[str, "Shader name (no .shader extension)"],
+    path: Annotated[str, "Required asset directory under Assets/ (for example Assets/Shaders)"],
     contents: Annotated[str,
                         "Shader code for 'create'/'update'"] | None = None,
 ) -> dict[str, Any]:

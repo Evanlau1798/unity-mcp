@@ -9,7 +9,7 @@ description: "MCP for Unity tools in the core group."
 Essential scene, script, asset & editor tools (always on by default)
 
 - **[`apply_text_edits`](./apply_text_edits.md)** — Apply small text edits to a C# script identified by URI.
-- **[`batch_execute`](./batch_execute.md)** — Executes multiple MCP commands in a single batch for dramatically better performance.
+- **[`batch_execute`](./batch_execute.md)** — Executes native Unity commands sequentially on the Editor main thread in one request.
 - **[`create_script`](./create_script.md)** — Create a new C# script at the given project path.
 - **[`debug_request_context`](./debug_request_context.md)** — Return the current FastMCP request context details (client_id, session_id, and meta dump).
 - **[`delete_script`](./delete_script.md)** — Delete a C# script by URI or Assets-relative path.
@@ -37,4 +37,4 @@ Essential scene, script, asset & editor tools (always on by default)
 - **[`refresh_unity`](./refresh_unity.md)** — Request a tracked Unity refresh and optionally compilation.
 - **[`script_apply_edits`](./script_apply_edits.md)** — Structured C# edits (methods/classes) with safer boundaries - prefer this over raw text.
 - **[`set_active_instance`](./set_active_instance.md)** — Set the active Unity instance for this client/session.
-- **[`validate_script`](./validate_script.md)** — Validate a C# script and return diagnostics.
+- **[`validate_script`](./validate_script.md)** — Validate a C# script and return diagnostics (basic or standard).

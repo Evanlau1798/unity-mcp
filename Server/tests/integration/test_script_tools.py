@@ -18,8 +18,7 @@ def setup_asset_tools():
 
 @pytest.mark.asyncio
 async def test_apply_text_edits_long_file(monkeypatch):
-    tools = setup_script_tools()
-    apply_edits = tools["apply_text_edits"]
+    from services.tools.script_text_edits import apply_text_edits as apply_edits
     captured = {}
 
     async def fake_send(cmd, params, **kwargs):

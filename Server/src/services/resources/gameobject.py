@@ -58,7 +58,7 @@ async def get_gameobject_api_docs(_ctx: Context) -> MCPResponse:
             "2. Use the instance ID to access detailed data via resources below"
         ],
         "best_practices": [
-            "⚡ Use batch_execute for multiple operations: Combine create/modify/component calls into one batch_execute call for 10-100x better performance",
+            "Use batch_execute to send several native create/modify/component commands in one request; execution remains sequential and has no rollback",
             "Example: Creating 5 cubes → 1 batch_execute with 5 manage_gameobject commands instead of 5 separate calls",
             "Example: Adding components to 3 objects → 1 batch_execute with 3 manage_components commands"
         ],
