@@ -123,7 +123,11 @@ Prefer this over [`apply_text_edits`](./apply_text_edits) for method-level chang
 }
 ```
 
-`position`: `start | end | before | after`. The Python wrapper requires `beforeMethodName` with `before` and `afterMethodName` with `after`; `methodName` is not the insertion anchor. The current native handler only implements method anchoring for `after`; `before` falls through to class-end insertion. Use `after` or a newline-safe anchor operation when placement matters. `start`/`end` select the position within the class body.
+`position`: `start | end | before | after`. Use `beforeMethodName` with `before` and `afterMethodName` with `after`; `methodName` is not the insertion anchor. A missing or unmatched anchor fails without writing. `before` inserts ahead of the target's documentation and attributes. Only direct methods in the requested class can anchor an edit; nested types, comments and strings are excluded. Optional `beforeReturnType`, `beforeParametersSignature` and `beforeAttributesContains` disambiguate overloads (use the equivalent `after*` keys for `after`). `start`/`end` select the position within the class body.
+
+To insert before `Update`, use the same payload with `"position": "before"` and `"beforeMethodName": "Update"` in place of `afterMethodName`.
+
+`before` fails without writing if conditional compilation directives precede the anchor inside the class; use explicit text edits when compiler-symbol context is required.
 
 ### Delete a method
 
