@@ -20,6 +20,12 @@
 - 只有有效前提下違反產品契約才是產品 RED。編譯、tool、fixture、oracle、cleanup 與產品問題分列，原始 FAIL／unknown 不改寫。行為修正依專案 TDD；文件或保持行為的重構不製造假 RED。
 - 根據變更影響選最小重現、相關正負向與必要回歸；候選穩定後才跑既定廣泛 gate。識別 source、test、harness、依賴、設定、fixture／profile 及執行產物；新 commit、reviewer 或對話不自動使有效證據失效。
 
+## 技術依賴與 Editor 排程
+
+把消費的原生介面與共享Editor資源分開：協定、物理、資產等獨立離線工作不必等待整個前Gate，但實際修改／匯入／Build／test／cleanup仍由同一owner串行。所需觀測資料先確認原生來源，人工注入正確值不能證明來源可用。消費「已接受」介面的整合要等該候選必要驗證及Fresh review終態；獨立準備可重疊，不提前宣稱接受。
+
+為測量或harness新增工作前，寫明結果會改變哪個採用／拒絕／下一假設的判斷；取得足夠證據後停止追加同義觀測。時間盒不豁免原門檻、不授權取消健康job。技術實驗、本地完整候選與client／產品接受分列；影響本地契約的必要人類決策未定，不能全推到真機階段。
+
 ## 一位 Unity owner，必要工作啟動一次
 
 1. 核對 exact project／Editor instance、已安裝版本、狀態觀測時間及 compile／reload／test／build。查既有工作與身分，再決定是否能開始。原場景、使用者資產與 dirty 所有權按影響保護；不要每輪重建全專案紀錄。
