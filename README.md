@@ -51,29 +51,27 @@ Control the Unity Editor in natural language from any MCP client — create scen
 
 **Requirements:** Unity **2021.3 LTS or newer**, Git on your PATH, Python
 **3.10+** with [`uv`](https://docs.astral.sh/uv/), and an MCP client that supports
-HTTP, such as Codex. Use the same fork commit for the Unity package and Python
-server. The steps below pin both to [`213a9fc3`](https://github.com/Evanlau1798/unity-mcp/commit/213a9fc3e93dd94414f1aba6c5d3c1f728dbcdb2).
+HTTP, such as Codex. These steps install the Unity package and Python server
+from this fork's `main` branch.
 
 1. **Install the Unity package.** Open **Window → Package Manager → + → Add
    package from git URL…** and paste:
 
    ```text
-   https://github.com/Evanlau1798/unity-mcp.git?path=/MCPForUnity#213a9fc3e93dd94414f1aba6c5d3c1f728dbcdb2
+   https://github.com/Evanlau1798/unity-mcp.git?path=/MCPForUnity#main
    ```
 
-2. **Set the Python server source.** Clone the fork outside your Unity project
-   and check out the same commit:
+2. **Set the Python server source.** Clone the fork outside your Unity project:
 
    ```bash
    git clone --branch main --single-branch https://github.com/Evanlau1798/unity-mcp.git
-   git -C unity-mcp checkout --detach 213a9fc3e93dd94414f1aba6c5d3c1f728dbcdb2
    ```
 
    In **Window → MCP for Unity → Advanced**, set **Server Source** to the full
-   path of that checkout's `Server` folder. If you're upgrading an existing
-   Unity-managed server, wait until the other Editors sharing it have closed,
-   then use **Stop Server** followed by **Start Server** in the managing Editor
-   to apply the new source.
+   path of that checkout's `Server` folder. To upgrade, re-add the Unity package
+   URL and run `git pull --ff-only` in the server checkout. If a Unity-managed
+   server is running, wait until the other Editors sharing it have closed,
+   then use **Stop Server** followed by **Start Server** in the managing Editor.
 
 3. **Connect over local HTTP.** In the **Connect** tab, select **HTTP Local**
    and click **Start Server**. If the matching fork server is already running
@@ -93,8 +91,8 @@ server. The steps below pin both to [`213a9fc3`](https://github.com/Evanlau1798/
 ## Performance and reliability — Evanlau1798 fork
 
 This fork improves refresh/test coordination, recovery across domain reload, and
-observability. **Pin the Unity package and Python server to the same commit SHA**;
-the upstream release version strings alone do not identify these changes.
+observability. **Update the Unity package and Python server together**. The
+upstream release version strings alone do not identify these changes.
 
 ### Optimized workflow
 
