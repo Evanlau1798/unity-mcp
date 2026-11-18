@@ -49,12 +49,44 @@ Control the Unity Editor in natural language from any MCP client — create scen
 
 ## Quickstart
 
-**Requirements:** Unity **2021.3 LTS → 6.x** · Python **3.10+** (via [`uv`](https://docs.astral.sh/uv/)). Works with **any MCP client** — Claude Desktop & Code, Cursor, VS Code, Windsurf, Cline, Gemini CLI, and more.
+**Requirements:** Unity **2021.3 LTS or newer**, Git on your PATH, Python
+**3.10+** with [`uv`](https://docs.astral.sh/uv/), and an MCP client that supports
+HTTP, such as Codex. Use the same fork commit for the Unity package and Python
+server. The steps below pin both to [`213a9fc3`](https://github.com/Evanlau1798/unity-mcp/commit/213a9fc3e93dd94414f1aba6c5d3c1f728dbcdb2).
 
-1. **Install** — Unity → Package Manager → Add from git URL:
-   `https://github.com/CoplayDev/unity-mcp.git?path=/MCPForUnity#main` &nbsp;_(pin `#v10.0.0` for this release, or `openupm add com.coplaydev.unity-mcp`)_
-2. **Configure** — `Window → MCP for Unity → Configure All Detected Clients`.
-3. **Prompt** — *"Create a cube at the origin and add a Rigidbody."* The cube appears in seconds.
+1. **Install the Unity package.** Open **Window → Package Manager → + → Add
+   package from git URL…** and paste:
+
+   ```text
+   https://github.com/Evanlau1798/unity-mcp.git?path=/MCPForUnity#213a9fc3e93dd94414f1aba6c5d3c1f728dbcdb2
+   ```
+
+2. **Set the Python server source.** Clone the fork outside your Unity project
+   and check out the same commit:
+
+   ```bash
+   git clone --branch main --single-branch https://github.com/Evanlau1798/unity-mcp.git
+   git -C unity-mcp checkout --detach 213a9fc3e93dd94414f1aba6c5d3c1f728dbcdb2
+   ```
+
+   In **Window → MCP for Unity → Advanced**, set **Server Source** to the full
+   path of that checkout's `Server` folder. If you're upgrading an existing
+   Unity-managed server, wait until the other Editors sharing it have closed,
+   then use **Stop Server** followed by **Start Server** in the managing Editor
+   to apply the new source.
+
+3. **Connect over local HTTP.** In the **Connect** tab, select **HTTP Local**
+   and click **Start Server**. If the matching fork server is already running
+   for another Editor, click **Connect** to join it. Configure your client from
+   the same tab or set its HTTP MCP URL to `http://127.0.0.1:8080/mcp` (adjust
+   the port if you changed the server's **HTTP URL**).
+
+4. **Verify the target Editor.** Ask your client to read
+   `mcpforunity://editor/state` and report the project path and Play Mode state.
+   If several Editors share the server, first read `mcpforunity://instances` and
+   use `set_active_instance` with the intended Editor's exact `Name@hash`. To
+   keep that target across new MCP sessions, use the client URL
+   `http://127.0.0.1:8080/mcp/instance/Name@hash` with your actual instance ID.
 
 ---
 
